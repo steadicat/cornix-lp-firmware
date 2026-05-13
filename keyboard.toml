@@ -13,7 +13,7 @@ enabled = true
 battery_adc_pin = "P0_05"
 adc_divider_measured = 2000
 adc_divider_total = 2806
-default_tx_power = 0
+default_tx_power = 8
 ble_use_2m_phy = true
 
 [host]
@@ -23,7 +23,8 @@ unlock_keys = [[1, 3], [1, 4]]
 [rmk]
 ble_profiles_num = 3
 split_peripherals_num = 1
-debounce_time = 5
+split_central_sleep_timeout_seconds = 900
+debounce_time = 3
 combo_max_num = 32
 fork_max_num = 16
 morse_max_num = 32
@@ -129,7 +130,7 @@ encoders = [["AudioVolUp", "AudioVolDown"], ["PageDown", "PageUp"]]
 [storage]
 enabled = true
 num_sectors = 32
-start_addr = 0x000A0000
+start_addr = 0x000D4000
 clear_storage = false
 clear_layout = false
 
