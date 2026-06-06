@@ -33,8 +33,8 @@ fn generate_vial_config() {
         .read_to_end(&mut keyboard_def_compressed)
         .expect("failed to compress vial.json");
 
-    // Stable project-local Vial keyboard ID. Do not reuse the extracted stock ID.
-    let keyboard_id = vec![0xC0u8, 0x52, 0x4E, 0x58, 0x4C, 0x50, 0x01, 0x00];
+    // Vial keyboard UID 16882930253541522617 (0xEA4C379DB209BCB9), encoded little-endian.
+    let keyboard_id = vec![0xB9u8, 0xBC, 0x09, 0xB2, 0x9D, 0x37, 0x4C, 0xEA];
     let declarations = [
         const_declaration!(pub VIAL_KEYBOARD_DEF = keyboard_def_compressed),
         const_declaration!(pub VIAL_KEYBOARD_ID = keyboard_id),
