@@ -153,8 +153,8 @@ pub(crate) async fn process_vial<
                     LittleEndian::write_u16(&mut report.input_data[1..3], tap_interval);
                 }
                 SettingKey::TapCapslockInterval => {
-                    let tap_interval = keymap.borrow().behavior.tap.tap_interval;
-                    LittleEndian::write_u16(&mut report.input_data[1..3], tap_interval);
+                    let tap_capslock_interval = keymap.borrow().behavior.tap.tap_capslock_interval;
+                    LittleEndian::write_u16(&mut report.input_data[1..3], tap_capslock_interval);
                 }
                 SettingKey::PermissiveHold => {
                     if let Some(m) = keymap.borrow().behavior.morse.default_profile.mode()
