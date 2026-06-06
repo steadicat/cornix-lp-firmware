@@ -163,8 +163,11 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
     pub(crate) async fn fire_held_non_morse_keys(&mut self) {
         self.held_buffer.keys.sort_unstable_by_key(|k| k.press_time);
 
-        // Trigger all non morse keys in the buffer
-        while let Some(key) = self.held_buffer.remove_if(|k| !k.action.is_morse()) {
+        // Trigger buffered normal keys, but leave combo candidates buffered for combo completion/timeout.
+        while let Some(key) =
+            self.held_buffer
+                .remove_if(|k| !k.action.is_morse() && matches!(k.state, KeyState::Pressed(_)))
+        {
             debug!("Trigger non-morse key: {:?}", key);
             let action = self.keymap.borrow_mut().get_action_with_layer_cache(key.event);
             match action {

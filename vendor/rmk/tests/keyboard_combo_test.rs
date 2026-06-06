@@ -11,12 +11,26 @@ use rusty_fork::rusty_fork_test;
 
 use crate::common::{KC_LSHIFT, create_test_keyboard_with_config};
 
+fn combos_config(timeout: Duration, combos: &[Combo]) -> CombosConfig {
+    let mut config = CombosConfig {
+        timeout,
+        ..Default::default()
+    };
+
+    for (slot, combo) in config.combos.iter_mut().zip(combos.iter()) {
+        *slot = Some(*combo);
+    }
+
+    config
+}
+
 // Get tested combo config
 pub fn get_combos_config() -> CombosConfig {
     // Define the function to return the appropriate combo configuration
-    CombosConfig {
-        combos: [
-            Some(Combo::new(ComboConfig::new(
+    combos_config(
+        Duration::from_millis(100),
+        &[
+            Combo::new(ComboConfig::new(
                 [
                     k!(V), //3,4
                     k!(B), //3,5
@@ -24,8 +38,8 @@ pub fn get_combos_config() -> CombosConfig {
                 .to_vec(),
                 k!(LShift),
                 Some(0),
-            ))),
-            Some(Combo::new(ComboConfig::new(
+            )),
+            Combo::new(ComboConfig::new(
                 [
                     k!(R), //1,4
                     k!(T), //1,5
@@ -33,17 +47,19 @@ pub fn get_combos_config() -> CombosConfig {
                 .to_vec(),
                 k!(LAlt),
                 Some(0),
-            ))),
-            Some(Combo::new(ComboConfig::new(
+            )),
+            Combo::new(ComboConfig::new(
                 [
                     k!(E), //1,3
                     k!(T), //1,5
                 ]
                 .to_vec(),
-                osm!(ModifierCombination::new_from(false, false, false, true, false)), // one-shot LShift
+                osm!(ModifierCombination::new_from(
+                    false, false, false, true, false
+                )), // one-shot LShift
                 Some(0),
-            ))),
-            Some(Combo::new(ComboConfig::new(
+            )),
+            Combo::new(ComboConfig::new(
                 [
                     k!(E), //1,3
                     k!(R), //1,4
@@ -51,8 +67,8 @@ pub fn get_combos_config() -> CombosConfig {
                 .to_vec(),
                 k!(A), // A
                 Some(0),
-            ))),
-            Some(Combo::new(ComboConfig::new(
+            )),
+            Combo::new(ComboConfig::new(
                 [
                     k!(E), //1,3
                     k!(R), //1,4
@@ -61,13 +77,9 @@ pub fn get_combos_config() -> CombosConfig {
                 .to_vec(),
                 k!(Space),
                 Some(0),
-            ))),
-            None,
-            None,
-            None,
+            )),
         ],
-        timeout: Duration::from_millis(100),
-    }
+    )
 }
 
 rusty_fork_test! {
@@ -304,16 +316,16 @@ rusty_fork_test! {
                         ),
                         ..Default::default()
                     },
-                    combo: CombosConfig {
-                        combos: [
-                            Some(Combo::new(ComboConfig::new(
+                    combo: combos_config(
+                        Duration::from_millis(50),
+                        &[
+                            Combo::new(ComboConfig::new(
                                 [th!(A, LShift), th!(S, LGui), th!(Z, LAlt)],
                                 k!(C),
                                 None,
-                            ))), None, None, None, None, None, None, None
+                            )),
                         ],
-                        timeout: Duration::from_millis(50),
-                    },
+                    ),
                     ..Default::default()
                 };
                 create_test_keyboard_with_config(behavior_config)
@@ -329,6 +341,42 @@ rusty_fork_test! {
             expected_reports: [
                 [0, [kc_to_u8!(C), 0, 0, 0, 0, 0]],
                 [0, [0, 0, 0, 0, 0, 0]],
+            ]
+        };
+    }
+
+    #[test]
+    fn test_mod_tap_hold_timeout_preserves_waiting_combo() {
+        key_sequence_test! {
+            keyboard: {
+                let behavior_config = BehaviorConfig {
+                    combo: combos_config(
+                        Duration::from_millis(300),
+                        &[
+                            Combo::new(ComboConfig::new(
+                                [k!(V), k!(B)],
+                                k!(C),
+                                Some(0),
+                            )),
+                        ],
+                    ),
+                    ..Default::default()
+                };
+                create_test_keyboard_with_config(behavior_config)
+            },
+            sequence: [
+                [2, 1, true, 10],  // Press th!(A, LShift)
+                [3, 4, true, 20],  // Press V, first combo key
+                [3, 5, true, 250], // Press B after mod-tap hold timeout, before combo timeout
+                [3, 4, false, 20],
+                [3, 5, false, 20],
+                [2, 1, false, 20],
+            ],
+            expected_reports: [
+                [KC_LSHIFT, [0; 6]],
+                [KC_LSHIFT, [kc_to_u8!(C), 0, 0, 0, 0, 0]],
+                [KC_LSHIFT, [0; 6]],
+                [0, [0; 6]],
             ]
         };
     }
