@@ -1,4 +1,5 @@
 /target/
+/vendor/*/target/
 /.embuild/
 /*.hex
 /*.uf2

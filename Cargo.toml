@@ -61,6 +61,9 @@ const-gen = "1.6"
 json = "0.12"
 xz2 = "0.1"
 
+[patch.crates-io]
+rmk = { path = "vendor/rmk" }
+
 [[bin]]
 name = "central"
 path = "src/central.rs"
