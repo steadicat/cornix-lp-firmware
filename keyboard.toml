@@ -83,8 +83,8 @@ pin_a = "P1_04"
 pin_b = "P1_06"
 internal_pullup = true
 phase = "resolution"
-resolution = 4
-reverse = false
+resolution = 1
+reverse = true
 
 [layout]
 rows = 8
