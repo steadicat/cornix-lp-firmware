@@ -346,6 +346,26 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                         self.process_inner(event).await;
                     }
                     Err(_timeout) => {
+                        // Don't dispatch a combo candidate while a tap-hold key is still undecided.
+                        // The next key may complete the combo before the tap-hold tapping term ends.
+                        let next_morse_timeout = self
+                            .held_buffer
+                            .keys
+                            .iter()
+                            .filter(|k| k.action.is_morse() && matches!(k.state, KeyState::Pressed(_)))
+                            .filter(|k| k.timeout_time > Instant::now())
+                            .map(|k| k.timeout_time)
+                            .min();
+
+                        if let Some(timeout_time) = next_morse_timeout {
+                            if let Some(k) = self.held_buffer.find_pos_mut(key.event.pos) {
+                                debug!("[Combo] Timeout deferred until morse timeout");
+                                k.timeout_time = timeout_time + Duration::from_millis(1);
+                                self.held_buffer.keys.sort_unstable_by_key(|k| k.timeout_time);
+                                return;
+                            }
+                        }
+
                         // Timeout, dispatch combo
                         debug!("[Combo] Timeout, dispatch combo");
                         self.dispatch_combos(&key.action, key.event).await;
