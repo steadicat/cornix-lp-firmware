@@ -53,6 +53,15 @@ fn create_hrm_keyboard_with_combo() -> Keyboard<'static, 1, 5, 2> {
     let combo_key_3 = KeyAction::TapHold(Action::Key(KeyCode::D), Action::LayerOn(1), Default::default());
 
     let hand = [[Hand::Left, Hand::Left, Hand::Right, Hand::Right, Hand::Right]];
+    let mut combo = CombosConfig::default();
+    combo.combos[0] = Some(Combo::new(ComboConfig::new([combo_key, combo_key_2], k!(X), None)));
+    combo.combos[1] = Some(Combo::new(ComboConfig::new([k!(A), combo_key], k!(Y), None)));
+    combo.combos[2] = Some(Combo::new(ComboConfig::new(
+        [combo_key, combo_key_2, combo_key_3],
+        k!(Z),
+        None,
+    )));
+    combo.timeout = Duration::from_millis(50);
 
     create_morse_keyboard(
         BehaviorConfig {
@@ -68,23 +77,7 @@ fn create_hrm_keyboard_with_combo() -> Keyboard<'static, 1, 5, 2> {
                 ),
                 ..Default::default()
             },
-            combo: CombosConfig {
-                combos: [
-                    Some(Combo::new(ComboConfig::new([combo_key, combo_key_2], k!(X), None))),
-                    Some(Combo::new(ComboConfig::new([k!(A), combo_key], k!(Y), None))),
-                    Some(Combo::new(ComboConfig::new(
-                        [combo_key, combo_key_2, combo_key_3],
-                        k!(Z),
-                        None,
-                    ))),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                ],
-                timeout: Duration::from_millis(50),
-            },
+            combo,
             ..BehaviorConfig::default()
         },
         hand,

@@ -2,7 +2,7 @@ pub mod common;
 
 use embassy_time::Duration;
 use rmk::combo::{Combo, ComboConfig};
-use rmk::config::{BehaviorConfig, CombosConfig, MorsesConfig};
+use rmk::config::{BehaviorConfig, CombosConfig, Hand, MorsesConfig};
 use rmk::k;
 use rmk::keyboard::Keyboard;
 use rmk::types::action::{Action, KeyAction};
@@ -11,7 +11,7 @@ use rmk::types::modifier::ModifierCombination;
 use rmk_types::action::{MorseMode, MorseProfile};
 use rusty_fork::rusty_fork_test;
 
-use crate::common::morse::create_simple_morse_keyboard;
+use crate::common::morse::{create_morse_keyboard, create_simple_morse_keyboard};
 use crate::common::{KC_LGUI, KC_LSHIFT};
 
 fn create_hold_on_other_key_press_keyboard() -> Keyboard<'static, 1, 5, 2> {
@@ -28,6 +28,26 @@ fn create_hold_on_other_key_press_keyboard() -> Keyboard<'static, 1, 5, 2> {
         },
         ..Default::default()
     })
+}
+
+fn create_unilateral_hold_on_other_key_press_keyboard() -> Keyboard<'static, 1, 5, 2> {
+    let hand = [[Hand::Left, Hand::Left, Hand::Right, Hand::Right, Hand::Right]];
+    create_morse_keyboard(
+        BehaviorConfig {
+            morse: MorsesConfig {
+                enable_flow_tap: false,
+                default_profile: MorseProfile::new(
+                    Some(true),
+                    Some(MorseMode::HoldOnOtherPress),
+                    Some(250u16),
+                    Some(250u16),
+                ),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        hand,
+    )
 }
 
 fn create_hold_on_other_key_press_keyboard_with_combo() -> Keyboard<'static, 1, 5, 2> {
@@ -48,6 +68,16 @@ fn create_hold_on_other_key_press_keyboard_with_combo() -> Keyboard<'static, 1, 
         MorseProfile::new(Some(false), Some(MorseMode::Normal), Some(250u16), Some(250u16)), //just to test if combo ignores the profile as expected
     );
     let combo_key_3 = KeyAction::TapHold(Action::Key(KeyCode::D), Action::LayerOn(1), Default::default());
+    let mut combo = CombosConfig::default();
+    combo.combos[0] = Some(Combo::new(ComboConfig::new([combo_key, combo_key_2], k!(X), None)));
+    combo.combos[1] = Some(Combo::new(ComboConfig::new([k!(A), combo_key], k!(Y), None)));
+    combo.combos[2] = Some(Combo::new(ComboConfig::new(
+        [combo_key, combo_key_2, combo_key_3],
+        k!(Z),
+        None,
+    )));
+    combo.timeout = Duration::from_millis(50);
+
     create_simple_morse_keyboard(BehaviorConfig {
         morse: MorsesConfig {
             enable_flow_tap: false,
@@ -59,23 +89,7 @@ fn create_hold_on_other_key_press_keyboard_with_combo() -> Keyboard<'static, 1, 
             ),
             ..MorsesConfig::default()
         },
-        combo: CombosConfig {
-            combos: [
-                Some(Combo::new(ComboConfig::new([combo_key, combo_key_2], k!(X), None))),
-                Some(Combo::new(ComboConfig::new([k!(A), combo_key], k!(Y), None))),
-                Some(Combo::new(ComboConfig::new(
-                    [combo_key, combo_key_2, combo_key_3],
-                    k!(Z),
-                    None,
-                ))),
-                None,
-                None,
-                None,
-                None,
-                None,
-            ],
-            timeout: Duration::from_millis(50),
-        },
+        combo,
         ..BehaviorConfig::default()
     })
 }
@@ -127,6 +141,44 @@ rusty_fork_test! {
                 [KC_LSHIFT, [kc_to_u8!(A), 0, 0, 0, 0, 0]], // Press A
                 [KC_LSHIFT, [0, 0, 0, 0, 0, 0]], // Release A
                 [0, [0, 0, 0, 0, 0, 0]], // Release mt!(B, LShift)
+            ]
+        };
+    }
+
+    #[test]
+    fn test_same_hand_roll_uses_tap_with_unilateral_tap() {
+        key_sequence_test! {
+            keyboard: create_unilateral_hold_on_other_key_press_keyboard(),
+            sequence: [
+                [0, 1, true, 10], // Press mt!(B, LShift)
+                [0, 0, true, 10], // Press A on the same hand
+                [0, 0, false, 10], // Release A
+                [0, 1, false, 10], // Release mt!(B, LShift)
+            ],
+            expected_reports: [
+                [0, [kc_to_u8!(B), 0, 0, 0, 0, 0]], // Press B
+                [0, [kc_to_u8!(B), kc_to_u8!(A), 0, 0, 0, 0]], // Press A
+                [0, [kc_to_u8!(B), 0, 0, 0, 0, 0]], // Release A
+                [0, [0, 0, 0, 0, 0, 0]], // Release B
+            ]
+        };
+    }
+
+    #[test]
+    fn test_opposite_hand_roll_still_holds_with_unilateral_tap() {
+        key_sequence_test! {
+            keyboard: create_unilateral_hold_on_other_key_press_keyboard(),
+            sequence: [
+                [0, 1, true, 10], // Press mt!(B, LShift)
+                [0, 2, true, 10], // Press mt!(C, LGui) on the opposite hand
+                [0, 2, false, 10], // Release C
+                [0, 1, false, 10], // Release B
+            ],
+            expected_reports: [
+                [KC_LSHIFT, [0, 0, 0, 0, 0, 0]], // Hold LShift
+                [KC_LSHIFT, [kc_to_u8!(C), 0, 0, 0, 0, 0]], // Press C
+                [KC_LSHIFT, [0, 0, 0, 0, 0, 0]], // Release C
+                [0, [0, 0, 0, 0, 0, 0]], // Release B
             ]
         };
     }

@@ -189,8 +189,13 @@ pub(crate) async fn process_vial<
                     };
                 }
                 SettingKey::PriorIdleTime => {
-                    let prior_idle_time = keymap.borrow().behavior.morse.prior_idle_time.as_millis() as u16;
-                    LittleEndian::write_u16(&mut report.input_data[1..3], prior_idle_time);
+                    let behavior = &keymap.borrow().behavior.morse;
+                    let flow_tap_term = if behavior.enable_flow_tap {
+                        behavior.prior_idle_time.as_millis() as u16
+                    } else {
+                        0
+                    };
+                    LittleEndian::write_u16(&mut report.input_data[1..3], flow_tap_term);
                 }
             }
         }
@@ -298,11 +303,13 @@ pub(crate) async fn process_vial<
                         .await;
                 }
                 SettingKey::PriorIdleTime => {
-                    let prior_idle_time = u16::from_le_bytes([report.output_data[4], report.output_data[5]]);
-                    keymap.borrow_mut().behavior.morse.prior_idle_time = Duration::from_millis(prior_idle_time as u64);
+                    let flow_tap_term = u16::from_le_bytes([report.output_data[4], report.output_data[5]]);
+                    let mut keymap = keymap.borrow_mut();
+                    keymap.behavior.morse.enable_flow_tap = flow_tap_term > 0;
+                    keymap.behavior.morse.prior_idle_time = Duration::from_millis(flow_tap_term as u64);
                     #[cfg(feature = "storage")]
                     FLASH_CHANNEL
-                        .send(FlashOperationMessage::PriorIdleTime(prior_idle_time))
+                        .send(FlashOperationMessage::PriorIdleTime(flow_tap_term))
                         .await;
                 }
             }

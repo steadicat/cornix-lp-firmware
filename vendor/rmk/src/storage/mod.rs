@@ -67,7 +67,7 @@ pub(crate) enum FlashOperationMessage {
     TapInterval(u16),
     // Interval for tapping capslock
     TapCapslockInterval(u16),
-    // The prior-idle-time in ms used for in flow tap
+    // Vial/QMK Flow Tap Term in ms. A value of 0 disables flow tap.
     PriorIdleTime(u16),
     // Default morse profile containing all morse/tap-hold settings (mode, timeouts, unilateral_tap)
     MorseDefaultProfile(MorseProfile),
@@ -365,7 +365,7 @@ pub(crate) struct LayoutConfig {
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, postcard::experimental::max_size::MaxSize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) struct BehaviorConfig {
-    // The prior-idle-time in ms used for in flow tap
+    // Vial/QMK Flow Tap Term in ms. A value of 0 disables flow tap.
     pub(crate) prior_idle_time: u16,
     // Default morse profile containing mode, timeouts, and unilateral_tap settings
     pub(crate) morse_default_profile: MorseProfile,
@@ -379,6 +379,14 @@ pub(crate) struct BehaviorConfig {
     // Interval for tapping capslock.
     // macOS has special processing of capslock, when tapping capslock, the tap interval should be another value
     pub(crate) tap_capslock_interval: u16,
+}
+
+fn stored_flow_tap_term(behavior: &config::BehaviorConfig) -> u16 {
+    if behavior.morse.enable_flow_tap {
+        behavior.morse.prior_idle_time.as_millis() as u16
+    } else {
+        0
+    }
 }
 
 pub fn async_flash_wrapper<F: NorFlash>(flash: F) -> BlockingAsync<F> {
@@ -810,6 +818,7 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
         .await
         .map_err(|e| print_storage_error::<F>(e))?
         {
+            behavior_config.morse.enable_flow_tap = c.prior_idle_time > 0;
             behavior_config.morse.prior_idle_time = Duration::from_millis(c.prior_idle_time as u64);
             behavior_config.morse.default_profile = c.morse_default_profile;
 
@@ -863,7 +872,7 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
 
         // Save behavior config
         let behavior_config = StorageData::BehaviorConfig(BehaviorConfig {
-            prior_idle_time: behavior.morse.prior_idle_time.as_millis() as u16,
+            prior_idle_time: stored_flow_tap_term(behavior),
             morse_default_profile: behavior.morse.default_profile,
 
             combo_timeout: behavior.combo.timeout.as_millis() as u16,
@@ -960,7 +969,7 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
         .await?;
 
         let behavior_config = StorageData::BehaviorConfig(BehaviorConfig {
-            prior_idle_time: behavior.morse.prior_idle_time.as_millis() as u16,
+            prior_idle_time: stored_flow_tap_term(behavior),
             morse_default_profile: behavior.morse.default_profile,
 
             combo_timeout: behavior.combo.timeout.as_millis() as u16,
@@ -1134,6 +1143,32 @@ const fn get_buffer_size() -> usize {
 
     #[cfg(not(feature = "host"))]
     256
+}
+
+#[cfg(test)]
+mod tests {
+    use embassy_time::Duration;
+
+    use super::stored_flow_tap_term;
+    use crate::config::BehaviorConfig;
+
+    #[test]
+    fn disabled_flow_tap_stores_zero_term() {
+        let mut behavior = BehaviorConfig::default();
+        behavior.morse.enable_flow_tap = false;
+        behavior.morse.prior_idle_time = Duration::from_millis(120);
+
+        assert_eq!(stored_flow_tap_term(&behavior), 0);
+    }
+
+    #[test]
+    fn enabled_flow_tap_stores_prior_idle_time() {
+        let mut behavior = BehaviorConfig::default();
+        behavior.morse.enable_flow_tap = true;
+        behavior.morse.prior_idle_time = Duration::from_millis(120);
+
+        assert_eq!(stored_flow_tap_term(&behavior), 120);
+    }
 }
 
 #[macro_export]

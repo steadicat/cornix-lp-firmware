@@ -664,6 +664,19 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
         }
     }
 
+    fn is_same_known_hand(hand_info: &[[Hand; COL]; ROW], pos1: KeyboardEventPos, pos2: KeyboardEventPos) -> bool {
+        if let KeyboardEventPos::Key(pos1) = pos1
+            && let KeyboardEventPos::Key(pos2) = pos2
+        {
+            let hand1 = Self::get_hand(hand_info, pos1);
+            let hand2 = Self::get_hand(hand_info, pos2);
+
+            hand1 == hand2 && hand1 != Hand::Unknown
+        } else {
+            false
+        }
+    }
+
     /// Make decisions for current key and each held key.
     ///
     /// This function iterates all held keys and makes decision for them if a special mode is triggered, such as permissive hold, etc.
@@ -747,6 +760,20 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                                 decision_for_current_key = KeyBehaviorDecision::Buffer;
                             }
                             MorseMode::HoldOnOtherPress => {
+                                let unilateral_tap =
+                                    Self::is_unilateral_tap_enabled(&self.keymap.borrow(), &held_key.action);
+                                if unilateral_tap
+                                    && Self::is_same_known_hand(
+                                        &self.keymap.borrow().positional_config.hand,
+                                        held_key.event.pos,
+                                        event.pos,
+                                    )
+                                {
+                                    debug!("Unilateral tap triggered on same-hand key press");
+                                    let _ = decisions.push((held_key.event.pos, HeldKeyDecision::UnilateralTap));
+                                    continue;
+                                }
+
                                 debug!(
                                     "Trigger morse key due to hold on other key press: {:?}",
                                     held_key.action
@@ -765,20 +792,15 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                         if unilateral_tap
                             && event.pos != held_key.event.pos
                             && decision_for_current_key != KeyBehaviorDecision::Release
-                            && let KeyboardEventPos::Key(pos1) = held_key.event.pos
-                            && let KeyboardEventPos::Key(pos2) = event.pos
+                            && Self::is_same_known_hand(
+                                &self.keymap.borrow().positional_config.hand,
+                                held_key.event.pos,
+                                event.pos,
+                            )
                         {
-                            let hand_info = &self.keymap.borrow().positional_config.hand;
-
-                            let hand1 = Self::get_hand(hand_info, pos1);
-                            let hand2 = Self::get_hand(hand_info, pos2);
-
-                            if hand1 == hand2 && hand1 != Hand::Unknown {
-                                //if same hand
-                                debug!("Unilateral tap triggered, resolve morse key as tapping");
-                                let _ = decisions.push((held_key.event.pos, HeldKeyDecision::UnilateralTap));
-                                continue;
-                            }
+                            debug!("Unilateral tap triggered, resolve morse key as tapping");
+                            let _ = decisions.push((held_key.event.pos, HeldKeyDecision::UnilateralTap));
+                            continue;
                         }
 
                         // The current key is being released, check only the held key in permissive hold mode
@@ -2342,33 +2364,30 @@ mod test {
         ]
     }
 
-    #[rustfmt::skip]
     fn get_combos_config() -> CombosConfig {
-        // Define the function to return the appropriate combo configuration
-        CombosConfig {
-            combos: [
-                Some(Combo::new(ComboConfig {
-                    actions: [
-                        k!(V), //3,4
-                        k!(B), //3,5
-                        k!(No), k!(No),
-                    ],
-                    output: k!(LShift),
-                    layer: Some(0),
-                })),
-                Some(Combo::new(ComboConfig {
-                    actions: [
-                        k!(R), //1,4
-                        k!(T), //1,5
-                        k!(No), k!(No),
-                    ],
-                    output: k!(LAlt),
-                    layer: Some(0),
-                })),
-                None, None, None, None, None, None
+        let mut combo = CombosConfig::default();
+        combo.combos[0] = Some(Combo::new(ComboConfig {
+            actions: [
+                k!(V), //3,4
+                k!(B), //3,5
+                k!(No),
+                k!(No),
             ],
-            timeout: Duration::from_millis(100),
-        }
+            output: k!(LShift),
+            layer: Some(0),
+        }));
+        combo.combos[1] = Some(Combo::new(ComboConfig {
+            actions: [
+                k!(R), //1,4
+                k!(T), //1,5
+                k!(No),
+                k!(No),
+            ],
+            output: k!(LAlt),
+            layer: Some(0),
+        }));
+        combo.timeout = Duration::from_millis(100);
+        combo
     }
 
     fn create_test_keyboard_with_config(config: BehaviorConfig) -> Keyboard<'static, 5, 14, 2> {
