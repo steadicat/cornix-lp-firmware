@@ -31,7 +31,7 @@ The ZMK indicator shield uses SPI3 with a two-LED WS2812 chain and brightness 64
 
 The controller maps the first LED to battery state and the second LED to host/split status. The color policy is official-like rather than recovered byte-for-byte from PandaKBLab binaries. It powers the indicator rail down when RMK reports sleep. RMK's Vial implementation still reports `"lighting": "none"`, matching the official V1.12 metadata; these LEDs are firmware status indicators, not Vial-editable RGB lighting.
 
-Embassy nRF exposes standard SPIM clock selections rather than ZMK's exact 6.4 MHz setting. The RMK controller uses 8 MHz SPIM with WS2812-safe byte frames.
+Embassy nRF exposes standard SPIM clock selections rather than ZMK's exact 6.4 MHz setting. The RMK controller uses 4 MHz SPIM with 5-bit WS2812 symbols, yielding 1.25 us LED bit cells.
 
 ## Not Ported Yet
 

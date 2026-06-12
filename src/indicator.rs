@@ -6,11 +6,16 @@ use rmk::controller::{Controller, PollingController};
 use rmk::event::ControllerEvent;
 
 const LED_COUNT: usize = 2;
-const BYTES_PER_LED: usize = 24;
-const FRAME_BYTES: usize = LED_COUNT * BYTES_PER_LED;
-// At 8 MHz, each SPI byte encodes one WS2812 bit.
-const WS2812_ONE: u8 = 0xF8;
-const WS2812_ZERO: u8 = 0xC0;
+const SYMBOL_BITS: usize = 5;
+const WS2812_BITS_PER_LED: usize = 24;
+const FRAME_BITS: usize = LED_COUNT * WS2812_BITS_PER_LED * SYMBOL_BITS;
+const FRAME_BYTES: usize = FRAME_BITS / 8;
+const RESET_US: u64 = 80;
+const INIT_DELAY_MS: u64 = 50;
+const STATUS_INTERVAL_SECS: u64 = 2;
+// At 4 MHz, each 5-bit SPI symbol encodes one 1.25 us WS2812 bit.
+const WS2812_ONE: u8 = 0b11100;
+const WS2812_ZERO: u8 = 0b10000;
 const BRIGHTNESS: u8 = 64;
 
 #[derive(Clone, Copy)]
@@ -118,74 +123,32 @@ impl CornixIndicator {
 
     async fn write_colors(&mut self, colors: [[u8; 3]; LED_COUNT]) {
         let mut frame = [0_u8; FRAME_BYTES];
-        let mut offset = 0;
+        let mut bit_offset = 0;
 
         for [red, green, blue] in colors {
             for byte in [green, red, blue] {
                 for bit in (0..8).rev() {
-                    frame[offset] = if byte & (1 << bit) != 0 {
+                    let symbol = if byte & (1 << bit) != 0 {
                         WS2812_ONE
                     } else {
                         WS2812_ZERO
                     };
-                    offset += 1;
+
+                    for symbol_bit in (0..SYMBOL_BITS).rev() {
+                        if symbol & (1 << symbol_bit) != 0 {
+                            frame[bit_offset / 8] |= 1 << (7 - (bit_offset % 8));
+                        }
+                        bit_offset += 1;
+                    }
                 }
             }
         }
 
         let _ = self.spi.write(&frame).await;
-        Timer::after_micros(80).await;
-    }
-}
-
-impl Controller for CornixIndicator {
-    type Event = ControllerEvent;
-
-    async fn process_event(&mut self, event: Self::Event) {
-        match event {
-            ControllerEvent::Battery(level) => self.battery = level,
-            ControllerEvent::ChargingState(charging) => self.charging = charging,
-            ControllerEvent::ConnectionType(connection) => {
-                self.host_state = if connection == 0 {
-                    LinkState::Usb
-                } else {
-                    LinkState::Unknown
-                };
-            }
-            ControllerEvent::BleState(profile, state) => {
-                self.active_profile = profile;
-                self.host_state = match state {
-                    rmk::ble::BleState::Advertising => LinkState::Advertising,
-                    rmk::ble::BleState::Connected => LinkState::Connected,
-                    rmk::ble::BleState::None => LinkState::Disconnected,
-                };
-            }
-            ControllerEvent::SplitPeripheral(_, connected)
-            | ControllerEvent::SplitCentral(connected) => {
-                self.split_connected = if connected {
-                    LinkState::Connected
-                } else {
-                    LinkState::Disconnected
-                };
-            }
-            ControllerEvent::Sleep(sleeping) => self.sleeping = sleeping,
-            ControllerEvent::BleProfile(profile) => {
-                self.active_profile = profile;
-                self.host_state = LinkState::Unknown;
-            }
-            _ => {}
-        }
+        Timer::after_micros(RESET_US).await;
     }
 
-    async fn next_message(&mut self) -> Self::Event {
-        self.sub.next_message_pure().await
-    }
-}
-
-impl PollingController for CornixIndicator {
-    const INTERVAL: Duration = Duration::from_secs(2);
-
-    async fn update(&mut self) {
+    async fn refresh(&mut self) {
         if self.sleeping {
             let _ = self.write_colors([[0, 0, 0], [0, 0, 0]]).await;
             self.power.set_low();
@@ -195,7 +158,7 @@ impl PollingController for CornixIndicator {
 
         self.power.set_high();
         if !self.initialized {
-            Timer::after_millis(50).await;
+            Timer::after_millis(INIT_DELAY_MS).await;
             self.initialized = true;
         }
 
@@ -204,9 +167,78 @@ impl PollingController for CornixIndicator {
     }
 }
 
+impl Controller for CornixIndicator {
+    type Event = ControllerEvent;
+
+    async fn process_event(&mut self, event: Self::Event) {
+        let should_refresh = match event {
+            ControllerEvent::Battery(level) => {
+                self.battery = level;
+                true
+            }
+            ControllerEvent::ChargingState(charging) => {
+                self.charging = charging;
+                true
+            }
+            ControllerEvent::ConnectionType(connection) => {
+                self.host_state = if connection == 0 {
+                    LinkState::Usb
+                } else {
+                    LinkState::Unknown
+                };
+                true
+            }
+            ControllerEvent::BleState(profile, state) => {
+                self.active_profile = profile;
+                self.host_state = match state {
+                    rmk::ble::BleState::Advertising => LinkState::Advertising,
+                    rmk::ble::BleState::Connected => LinkState::Connected,
+                    rmk::ble::BleState::None => LinkState::Disconnected,
+                };
+                true
+            }
+            ControllerEvent::SplitPeripheral(_, connected)
+            | ControllerEvent::SplitCentral(connected) => {
+                self.split_connected = if connected {
+                    LinkState::Connected
+                } else {
+                    LinkState::Disconnected
+                };
+                true
+            }
+            ControllerEvent::Sleep(sleeping) => {
+                self.sleeping = sleeping;
+                true
+            }
+            ControllerEvent::BleProfile(profile) => {
+                self.active_profile = profile;
+                self.host_state = LinkState::Unknown;
+                true
+            }
+            _ => false,
+        };
+
+        if should_refresh {
+            self.refresh().await;
+        }
+    }
+
+    async fn next_message(&mut self) -> Self::Event {
+        self.sub.next_message_pure().await
+    }
+}
+
+impl PollingController for CornixIndicator {
+    const INTERVAL: Duration = Duration::from_secs(STATUS_INTERVAL_SECS);
+
+    async fn update(&mut self) {
+        self.refresh().await;
+    }
+}
+
 pub fn spim_config() -> spim::Config {
     let mut config = spim::Config::default();
-    config.frequency = spim::Frequency::M8;
+    config.frequency = spim::Frequency::M4;
     config.mosi_drive = OutputDrive::HighDrive;
     config
 }
