@@ -558,6 +558,9 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                                     let action =
                                         Self::action_from_pattern(self.keymap.borrow().behavior, &action, pattern);
                                     self.process_key_action_normal(action, held_key.event).await;
+                                    if Self::action_updates_layer_state(action, held_key.event) {
+                                        self.refresh_buffered_actions_after_layer_change(held_key.press_time);
+                                    }
                                     held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action);
                                     // Push back after triggered hold
                                     self.held_buffer.push_without_sort(held_key);
@@ -652,6 +655,34 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
             }
         }
         (keyboard_state_updated, decision_for_current_key)
+    }
+
+    fn action_updates_layer_state(action: Action, event: KeyboardEvent) -> bool {
+        match action {
+            Action::LayerOn(_) | Action::LayerOnWithModifier(_, _) => true,
+            Action::LayerOff(_) | Action::LayerToggleOnly(_) | Action::OneShotLayer(_) => event.pressed,
+            Action::LayerToggle(_) => !event.pressed,
+            Action::DefaultLayer(_) => true,
+            _ => false,
+        }
+    }
+
+    fn refresh_buffered_actions_after_layer_change(&mut self, press_time: Instant) {
+        let mut idx = 0;
+        while idx < self.held_buffer.keys.len() {
+            let should_refresh = {
+                let key = &self.held_buffer.keys[idx];
+                key.press_time > press_time && matches!(key.state, KeyState::Pressed(_) | KeyState::WaitingCombo)
+            };
+
+            if should_refresh {
+                let event = self.held_buffer.keys[idx].event;
+                // Re-resolving through the keymap also updates the layer cache used by the release event.
+                self.held_buffer.keys[idx].action = self.keymap.borrow_mut().get_action_with_layer_cache(event);
+            }
+
+            idx += 1;
+        }
     }
 
     fn get_hand(hand_info: &[[Hand; COL]; ROW], pos: KeyPos) -> Hand {

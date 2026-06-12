@@ -42,6 +42,16 @@ fn create_permissive_hold_keyboard_with_combo() -> Keyboard<'static, 1, 5, 2> {
         Default::default(),
     );
     let combo_key_3 = KeyAction::TapHold(Action::Key(KeyCode::D), Action::LayerOn(1), Default::default());
+    let mut combo = CombosConfig::default();
+    combo.combos[0] = Some(Combo::new(ComboConfig::new([combo_key, combo_key_2], k!(X), None)));
+    combo.combos[1] = Some(Combo::new(ComboConfig::new([k!(A), combo_key], k!(Y), None)));
+    combo.combos[2] = Some(Combo::new(ComboConfig::new(
+        [combo_key, combo_key_2, combo_key_3],
+        k!(Z),
+        None,
+    )));
+    combo.timeout = Duration::from_millis(50);
+
     create_simple_morse_keyboard(BehaviorConfig {
         morse: MorsesConfig {
             enable_flow_tap: false,
@@ -53,23 +63,28 @@ fn create_permissive_hold_keyboard_with_combo() -> Keyboard<'static, 1, 5, 2> {
             ),
             ..Default::default()
         },
-        combo: CombosConfig {
-            combos: [
-                Some(Combo::new(ComboConfig::new([combo_key, combo_key_2], k!(X), None))),
-                Some(Combo::new(ComboConfig::new([k!(A), combo_key], k!(Y), None))),
-                Some(Combo::new(ComboConfig::new(
-                    [combo_key, combo_key_2, combo_key_3],
-                    k!(Z),
-                    None,
-                ))),
-                None,
-                None,
-                None,
-                None,
-                None,
-            ],
-            timeout: Duration::from_millis(50),
+        combo,
+        ..BehaviorConfig::default()
+    })
+}
+
+fn create_permissive_hold_keyboard_with_normal_combo_candidate() -> Keyboard<'static, 1, 5, 2> {
+    let mut combo = CombosConfig::default();
+    combo.combos[0] = Some(Combo::new(ComboConfig::new([k!(A), k!(E)], k!(Y), None)));
+    combo.timeout = Duration::from_millis(50);
+
+    create_simple_morse_keyboard(BehaviorConfig {
+        morse: MorsesConfig {
+            enable_flow_tap: false,
+            default_profile: MorseProfile::new(
+                Some(false),
+                Some(MorseMode::PermissiveHold),
+                Some(250u16),
+                Some(250u16),
+            ),
+            ..Default::default()
         },
+        combo,
         ..BehaviorConfig::default()
     })
 }
@@ -1219,6 +1234,40 @@ rusty_fork_test! {
                 [0, [0, 0, 0, 0, 0, 0]], // Release A
                 [0, [kc_to_u8!(Kp2), 0, 0, 0, 0, 0]], // Press Kp2
                 [0, [0, 0, 0, 0, 0, 0]], // Release Kp2
+            ]
+        };
+    }
+
+    #[test]
+    fn test_layer_tap_timeout_relooks_buffered_mod_tap_key() {
+        key_sequence_test! {
+            keyboard: create_permissive_hold_keyboard(),
+            sequence: [
+                [0, 3, true, 10],  // Press lt!(1, D)
+                [0, 1, true, 40],  // Press mt!(B, LShift) before lt!(1, D) resolves
+                [0, 1, false, 230], // Release B after lt!(1, D) timeout but before B timeout
+                [0, 3, false, 10], // Release lt!(1, D)
+            ],
+            expected_reports: [
+                [0, [kc_to_u8!(Kp2), 0, 0, 0, 0, 0]], // Press Kp2 on layer 1
+                [0, [0, 0, 0, 0, 0, 0]], // Release Kp2
+            ]
+        };
+    }
+
+    #[test]
+    fn test_layer_tap_timeout_relooks_buffered_combo_candidate_key() {
+        key_sequence_test! {
+            keyboard: create_permissive_hold_keyboard_with_normal_combo_candidate(),
+            sequence: [
+                [0, 3, true, 10],  // Press lt!(1, D)
+                [0, 0, true, 10],  // Press A before lt!(1, D) resolves; A is part of a combo
+                [0, 0, false, 300], // Release A after lt!(1, D) timeout
+                [0, 3, false, 10], // Release lt!(1, D)
+            ],
+            expected_reports: [
+                [0, [kc_to_u8!(Kp1), 0, 0, 0, 0, 0]], // Press Kp1 on layer 1
+                [0, [0, 0, 0, 0, 0, 0]], // Release Kp1
             ]
         };
     }

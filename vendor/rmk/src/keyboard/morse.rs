@@ -26,6 +26,9 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                 if let Some(action) = final_action {
                     debug!("hold prediction {:?} -> {:?}", pattern, action);
                     self.process_key_action_normal(action, key.event).await;
+                    if Self::action_updates_layer_state(action, key.event) {
+                        self.refresh_buffered_actions_after_layer_change(key.press_time);
+                    }
                     if let Some(k) = self.held_buffer.find_pos_mut(key.event.pos) {
                         k.state = KeyState::ProcessedButReleaseNotReportedYet(action);
                     }

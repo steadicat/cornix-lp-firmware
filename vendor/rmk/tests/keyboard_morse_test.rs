@@ -12,6 +12,32 @@ use rusty_fork::rusty_fork_test;
 use crate::common::morse::create_simple_morse_keyboard;
 use crate::common::{KC_LGUI, KC_LSHIFT};
 
+fn create_simple_morse_keyboard_with_combo() -> rmk::keyboard::Keyboard<'static, 1, 5, 2> {
+    let mut combo = CombosConfig::default();
+    combo.combos[0] = Some(Combo::new(ComboConfig::new(
+        [
+            KeyAction::TapHold(
+                Action::Key(KeyCode::B),
+                Action::Modifier(ModifierCombination::LSHIFT),
+                Default::default(),
+            ),
+            KeyAction::TapHold(
+                Action::Key(KeyCode::C),
+                Action::Modifier(ModifierCombination::LGUI),
+                Default::default(),
+            ),
+        ],
+        k!(X),
+        None,
+    )));
+    combo.timeout = Duration::from_millis(50);
+
+    create_simple_morse_keyboard(BehaviorConfig {
+        combo,
+        ..BehaviorConfig::default()
+    })
+}
+
 rusty_fork_test! {
     #[test]
     fn test_morse_tap() {
@@ -724,20 +750,7 @@ rusty_fork_test! {
     #[test]
     fn test_morse_with_combo() {
         key_sequence_test! {
-            keyboard: create_simple_morse_keyboard(BehaviorConfig {
-                    combo: CombosConfig {
-                        combos: [
-                            Some(Combo::new(ComboConfig::new(
-                                [KeyAction::TapHold(Action::Key(KeyCode::B), Action::Modifier(ModifierCombination::LSHIFT), Default::default()),
-                                 KeyAction::TapHold(Action::Key(KeyCode::C), Action::Modifier(ModifierCombination::LGUI), Default::default())],
-                                k!(X),
-                                None,
-                            ))), None, None, None, None, None, None, None
-                        ],
-                        timeout: Duration::from_millis(50),
-                    },
-                    ..BehaviorConfig::default()
-                }),
+            keyboard: create_simple_morse_keyboard_with_combo(),
             sequence: [
                 [0, 1, true, 20],  // Press mt!(B, LShift)
                 [0, 2, true, 60],  // Press mt!(C, LGui)
@@ -756,20 +769,7 @@ rusty_fork_test! {
     #[test]
     fn test_morse_with_combo_2() {
         key_sequence_test! {
-            keyboard: create_simple_morse_keyboard(BehaviorConfig {
-                    combo: CombosConfig {
-                        combos: [
-                            Some(Combo::new(ComboConfig::new(
-                                [KeyAction::TapHold(Action::Key(KeyCode::B), Action::Modifier(ModifierCombination::LSHIFT), Default::default()),
-                                 KeyAction::TapHold(Action::Key(KeyCode::C), Action::Modifier(ModifierCombination::LGUI), Default::default())],
-                                k!(X),
-                                None,
-                            ))), None, None, None, None, None, None, None
-                        ],
-                        timeout: Duration::from_millis(50),
-                    },
-                    ..BehaviorConfig::default()
-                }),
+            keyboard: create_simple_morse_keyboard_with_combo(),
             sequence: [
                 [0, 1, true, 20],  // Press mt!(B, LShift)
                 [0, 2, true, 20],  // Press mt!(C, LGui)
