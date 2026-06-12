@@ -29,7 +29,11 @@ This file tracks Cornix LP hardware facts from `hitsmaxft/zmk-keyboard-cornix` a
 
 The ZMK indicator shield uses SPI3 with a two-LED WS2812 chain and brightness 64. This RMK fork implements the same physical pins with a custom controller in `src/indicator.rs`.
 
-The controller maps the first LED to battery state and the second LED to host/split status. The color policy is official-like rather than recovered byte-for-byte from PandaKBLab binaries. It powers the indicator rail down when RMK reports sleep. RMK's Vial implementation still reports `"lighting": "none"`, matching the official V1.12 metadata; these LEDs are firmware status indicators, not Vial-editable RGB lighting.
+The controller maps the first electrical LED in the WS2812 chain to battery state and the second to host/split status. Depending on viewing orientation, the physical left-to-right order can appear reversed. The color policy is official-like rather than recovered byte-for-byte from PandaKBLab binaries. It powers the indicator rail down when RMK reports sleep. RMK's Vial implementation still reports `"lighting": "none"`, matching the official V1.12 metadata; these LEDs are firmware status indicators, not Vial-editable RGB lighting.
+
+The battery/status LED can show RMK charging state, but this keyboard config currently has no `charge_state` pin. The controller therefore also treats RMK's active USB keyboard path as a charging proxy and shows the battery LED teal while USB is active. When not charging or USB-active, the battery LED turns off after a short status window that starts when the LED rail is actually initialized.
+
+The link/status LED blinks while its side-specific connection is not ready. On the central half, that means the host connection only: searching/unknown BLE state blinks blue, disconnected BLE state blinks red, connected BLE shows blue briefly, and active USB shows teal. On the peripheral half, the LED reports the right-to-left split connection. Once connected, it shows the connected color briefly, then turns off until the next relevant status change.
 
 Embassy nRF exposes standard SPIM clock selections rather than ZMK's exact 6.4 MHz setting. The RMK controller uses 4 MHz SPIM with 5-bit WS2812 symbols, yielding 1.25 us LED bit cells.
 

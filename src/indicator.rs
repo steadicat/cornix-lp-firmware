@@ -1,6 +1,6 @@
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::spim::{self, Spim};
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use rmk::channel::{CONTROLLER_CHANNEL, ControllerSub};
 use rmk::controller::{Controller, PollingController};
 use rmk::event::ControllerEvent;
@@ -12,7 +12,8 @@ const FRAME_BITS: usize = LED_COUNT * WS2812_BITS_PER_LED * SYMBOL_BITS;
 const FRAME_BYTES: usize = FRAME_BITS / 8;
 const RESET_US: u64 = 80;
 const INIT_DELAY_MS: u64 = 50;
-const STATUS_INTERVAL_SECS: u64 = 2;
+const STATUS_INTERVAL_MS: u64 = 500;
+const STATUS_VISIBLE_SECS: u64 = 5;
 // At 4 MHz, each 5-bit SPI symbol encodes one 1.25 us WS2812 bit.
 const WS2812_ONE: u8 = 0b11100;
 const WS2812_ZERO: u8 = 0b10000;
@@ -31,7 +32,12 @@ enum LinkState {
     Disconnected,
     Advertising,
     Connected,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HostTransport {
     Usb,
+    Ble,
 }
 
 pub struct CornixIndicator {
@@ -41,11 +47,15 @@ pub struct CornixIndicator {
     side: Side,
     battery: u8,
     charging: bool,
+    host_transport: HostTransport,
+    usb_active: bool,
     host_state: LinkState,
     split_connected: LinkState,
-    active_profile: u8,
     sleeping: bool,
     initialized: bool,
+    blink_on: bool,
+    battery_visible_since: Instant,
+    link_visible_since: Instant,
 }
 
 impl CornixIndicator {
@@ -59,11 +69,15 @@ impl CornixIndicator {
             side,
             battery: 100,
             charging: false,
+            host_transport: HostTransport::Ble,
+            usb_active: false,
             host_state: LinkState::Unknown,
             split_connected: LinkState::Unknown,
-            active_profile: 0,
             sleeping: false,
             initialized: false,
+            blink_on: true,
+            battery_visible_since: Instant::now(),
+            link_visible_since: Instant::now(),
         }
     }
 
@@ -75,9 +89,29 @@ impl CornixIndicator {
         ]
     }
 
+    fn visible_since(timestamp: Instant) -> bool {
+        timestamp.elapsed() < Duration::from_secs(STATUS_VISIBLE_SECS)
+    }
+
+    fn note_battery_activity(&mut self) {
+        self.battery_visible_since = Instant::now();
+    }
+
+    fn note_link_activity(&mut self) {
+        self.link_visible_since = Instant::now();
+        self.blink_on = true;
+    }
+
+    fn set_usb_active(&mut self, active: bool) {
+        if self.usb_active != active {
+            self.usb_active = active;
+            self.note_battery_activity();
+        }
+    }
+
     fn battery_color(&self) -> [u8; 3] {
-        if self.charging {
-            return Self::scale([32, 96, 255]);
+        if self.charging || self.usb_active {
+            return Self::scale([0, 180, 160]);
         }
 
         match self.battery {
@@ -87,37 +121,64 @@ impl CornixIndicator {
         }
     }
 
+    fn link_connected(&self) -> bool {
+        match self.side {
+            Side::Central => {
+                if self.host_transport == HostTransport::Usb {
+                    self.usb_active
+                } else {
+                    self.host_state == LinkState::Connected
+                }
+            }
+            Side::Peripheral => self.split_connected == LinkState::Connected,
+        }
+    }
+
+    fn central_link_color(&self) -> [u8; 3] {
+        if self.usb_active {
+            return Self::scale([0, 180, 160]);
+        }
+
+        match self.host_state {
+            LinkState::Connected => Self::scale([0, 96, 255]),
+            LinkState::Advertising | LinkState::Unknown => Self::scale([0, 96, 255]),
+            LinkState::Disconnected => Self::scale([255, 0, 0]),
+        }
+    }
+
+    fn render_colors(&self) -> [[u8; 3]; LED_COUNT] {
+        let battery_visible =
+            self.charging || self.usb_active || Self::visible_since(self.battery_visible_since);
+        let battery = if battery_visible {
+            self.battery_color()
+        } else {
+            [0, 0, 0]
+        };
+
+        let link_connected = self.link_connected();
+        let link_visible = if link_connected {
+            Self::visible_since(self.link_visible_since)
+        } else {
+            self.blink_on
+        };
+        let link = if link_visible {
+            self.link_color()
+        } else {
+            [0, 0, 0]
+        };
+
+        [battery, link]
+    }
+
     fn link_color(&self) -> [u8; 3] {
         match self.side {
-            Side::Central => match (self.host_state, self.split_connected) {
-                (LinkState::Connected, LinkState::Connected | LinkState::Unknown) => {
-                    Self::scale([0, 96, 255])
-                }
-                (LinkState::Usb, LinkState::Connected | LinkState::Unknown) => {
-                    Self::scale([0, 180, 160])
-                }
-                (LinkState::Advertising, _) => Self::scale([255, 160, 0]),
-                (LinkState::Connected, LinkState::Disconnected) => Self::scale([255, 160, 0]),
-                (LinkState::Disconnected, _) => Self::scale([255, 0, 64]),
-                (LinkState::Unknown, LinkState::Connected) => Self::scale([96, 0, 255]),
-                (LinkState::Unknown, _) => Self::profile_color(self.active_profile),
-                _ => Self::profile_color(self.active_profile),
-            },
+            Side::Central => self.central_link_color(),
             Side::Peripheral => match self.split_connected {
                 LinkState::Connected => Self::scale([96, 0, 255]),
                 LinkState::Disconnected => Self::scale([255, 0, 64]),
                 LinkState::Advertising => Self::scale([255, 160, 0]),
-                LinkState::Usb => Self::scale([0, 180, 160]),
                 LinkState::Unknown => Self::scale([32, 32, 32]),
             },
-        }
-    }
-
-    fn profile_color(profile: u8) -> [u8; 3] {
-        match profile % 3 {
-            0 => Self::scale([0, 96, 255]),
-            1 => Self::scale([96, 0, 255]),
-            _ => Self::scale([0, 180, 72]),
         }
     }
 
@@ -160,10 +221,11 @@ impl CornixIndicator {
         if !self.initialized {
             Timer::after_millis(INIT_DELAY_MS).await;
             self.initialized = true;
+            self.note_battery_activity();
+            self.note_link_activity();
         }
 
-        self.write_colors([self.battery_color(), self.link_color()])
-            .await;
+        self.write_colors(self.render_colors()).await;
     }
 }
 
@@ -174,27 +236,37 @@ impl Controller for CornixIndicator {
         let should_refresh = match event {
             ControllerEvent::Battery(level) => {
                 self.battery = level;
+                self.note_battery_activity();
                 true
             }
             ControllerEvent::ChargingState(charging) => {
                 self.charging = charging;
+                self.note_battery_activity();
                 true
             }
             ControllerEvent::ConnectionType(connection) => {
-                self.host_state = if connection == 0 {
-                    LinkState::Usb
+                self.host_transport = if connection == 0 {
+                    HostTransport::Usb
                 } else {
-                    LinkState::Unknown
+                    HostTransport::Ble
                 };
+                self.set_usb_active(false);
+                self.host_state = LinkState::Unknown;
+                self.note_link_activity();
                 true
             }
-            ControllerEvent::BleState(profile, state) => {
-                self.active_profile = profile;
-                self.host_state = match state {
-                    rmk::ble::BleState::Advertising => LinkState::Advertising,
-                    rmk::ble::BleState::Connected => LinkState::Connected,
-                    rmk::ble::BleState::None => LinkState::Disconnected,
-                };
+            ControllerEvent::BleState(_, state) => {
+                if self.host_transport == HostTransport::Usb {
+                    self.set_usb_active(matches!(state, rmk::ble::BleState::None));
+                } else {
+                    self.set_usb_active(false);
+                    self.host_state = match state {
+                        rmk::ble::BleState::Advertising => LinkState::Advertising,
+                        rmk::ble::BleState::Connected => LinkState::Connected,
+                        rmk::ble::BleState::None => LinkState::Disconnected,
+                    };
+                }
+                self.note_link_activity();
                 true
             }
             ControllerEvent::SplitPeripheral(_, connected)
@@ -204,15 +276,24 @@ impl Controller for CornixIndicator {
                 } else {
                     LinkState::Disconnected
                 };
+                self.note_link_activity();
                 true
             }
             ControllerEvent::Sleep(sleeping) => {
                 self.sleeping = sleeping;
+                if sleeping {
+                    self.set_usb_active(false);
+                } else {
+                    self.note_battery_activity();
+                    self.note_link_activity();
+                }
                 true
             }
-            ControllerEvent::BleProfile(profile) => {
-                self.active_profile = profile;
-                self.host_state = LinkState::Unknown;
+            ControllerEvent::BleProfile(_) => {
+                if self.host_transport == HostTransport::Ble {
+                    self.host_state = LinkState::Unknown;
+                }
+                self.note_link_activity();
                 true
             }
             _ => false,
@@ -229,9 +310,10 @@ impl Controller for CornixIndicator {
 }
 
 impl PollingController for CornixIndicator {
-    const INTERVAL: Duration = Duration::from_secs(STATUS_INTERVAL_SECS);
+    const INTERVAL: Duration = Duration::from_millis(STATUS_INTERVAL_MS);
 
     async fn update(&mut self) {
+        self.blink_on = !self.blink_on;
         self.refresh().await;
     }
 }
