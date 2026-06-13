@@ -151,6 +151,10 @@ name = "keyboard_combo_test"
 path = "tests/keyboard_combo_test.rs"
 
 [[test]]
+name = "keyboard_caps_word_test"
+path = "tests/keyboard_caps_word_test.rs"
+
+[[test]]
 name = "keyboard_layer_test"
 path = "tests/keyboard_layer_test.rs"
 

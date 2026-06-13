@@ -147,6 +147,13 @@ impl CapsWordState {
             }
         }
     }
+
+    fn has_command_modifier(modifiers: ModifierCombination) -> bool {
+        // Ctrl, Alt, and GUI chords are commands, not word text. Shift is allowed
+        // because Caps Word itself is implemented as a temporary Shift.
+        const COMMAND_MODIFIER_BITS: u8 = 0b1101_1101;
+        modifiers.into_bits() & COMMAND_MODIFIER_BITS != 0
+    }
 }
 
 impl<const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize> Runnable
@@ -1462,6 +1469,10 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
         // Apply the modifiers from Action::KeyWithModifiers
         // the suppression effect of forks should not apply on these
         result |= self.with_modifiers;
+
+        if self.caps_word.is_active() && CapsWordState::has_command_modifier(result) {
+            self.caps_word.deactivate();
+        }
 
         // Apply Caps Word shift
         if self.caps_word.is_active() && pressed && self.caps_word.is_shift_current() {
