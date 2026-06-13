@@ -56,9 +56,10 @@ This firmware uses an Adafruit UF2 bootloader memory layout with application fla
 
 ## Porting Notes
 
-This fork also cross-checks two community RMK ports:
+This fork also cross-checks these community RMK ports:
 
 - <https://github.com/adong660/rmk-cornix>
 - <https://github.com/dovahcrow/cornix-rmk>
+- <https://github.com/numachang/cornix-rmk-custom>
 
 The current config adopts the RMK 0.8 `matrix_map`/`[[layer]]` layout style, Vial-compatible encoder positions, nRF52840 DCDC settings, ZMK-compatible flash storage partitioning, ZMK-style +8 dBm BLE transmit power, ZMK-style 3 ms debounce, split sleep management, larger Vial storage allocation, Cornix WS2812 status LED support, and encoder-per-layer mappings from those projects where they fit the official LP split target.
