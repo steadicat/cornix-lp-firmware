@@ -643,7 +643,6 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
     async fn check_enable(&mut self) -> bool {
         if let Some(StorageData::StorageConfig(config)) = self.fetch_data(StorageKey::StorageConfig).await
             && config.enable
-            && config.build_hash == BUILD_HASH
         {
             return true;
         }
@@ -1065,7 +1064,7 @@ mod tests {
     }
 
     #[test]
-    fn build_hash_mismatch_reinitializes_storage() {
+    fn build_hash_mismatch_preserves_storage() {
         block_on(async {
             type Flash = TestFlash<16_384, 4_096, 1>;
 
@@ -1118,17 +1117,15 @@ mod tests {
             assert!(matches!(
                 stored_layout,
                 StorageData::LayoutConfig(LayoutConfig {
-                    default_layer: 0,
-                    layout_option: 0,
+                    default_layer: 7,
+                    layout_option: 42,
                 })
             ));
-            assert!(matches!(
-                stored_config,
-                StorageData::StorageConfig(LocalStorageConfig {
-                    enable: true,
-                    build_hash: BUILD_HASH,
-                })
-            ));
+            let StorageData::StorageConfig(config) = stored_config else {
+                panic!("expected storage config");
+            };
+            assert!(config.enable);
+            assert_eq!(config.build_hash, BUILD_HASH.wrapping_sub(1));
         });
     }
 }
