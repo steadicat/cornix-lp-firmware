@@ -13,6 +13,8 @@ enabled = true
 battery_adc_pin = "P0_05"
 adc_divider_measured = 2000
 adc_divider_total = 2806
+charge_state.pin = "P0_01"
+charge_state.low_active = true
 default_tx_power = 8
 ble_use_2m_phy = true
 

@@ -13,15 +13,16 @@ This file tracks Cornix LP hardware facts from `hitsmaxft/zmk-keyboard-cornix` a
 | Diodes | `col2row` | RMK default matrix direction |
 | Battery ADC | `AIN3`, physical `P0_05` | Ported as `[ble].battery_adc_pin` |
 | Battery divider | `output-ohms = 2000000`, `full-ohms = 2806000` | Ported as `2000 / 2806` |
+| Charger status | `P0_01`, active low | Ported as `[ble].charge_state` |
 | Encoder pins | `P1_04`, `P1_06`, pull-up | Ported on both halves |
 | Encoder resolution | `steps = 80`, `triggers-per-rotation = 20` | Ported as RMK resolution `4` |
 | BLE TX power | `CONFIG_BT_CTLR_TX_PWR_PLUS_8=y` | Ported as `default_tx_power = 8` |
 | Debounce | 3 ms press/release on split peripheral builds | Ported as global `debounce_time = 3` |
 | Flash storage | `0x000d4000..0x000f3fff` | Ported as storage start `0x000D4000`, 32 sectors |
-| Left indicator power | `P0_13`, active high, 50 ms init delay | Ported in the custom Cornix indicator controller |
-| Right indicator power | `P0_24`, active high, 50 ms init delay | Ported in the custom Cornix indicator controller |
-| Left WS2812 data | SPI3 MOSI on `P0_24` | Ported in the custom Cornix indicator controller |
-| Right WS2812 data | SPI3 MOSI on `P0_13` | Ported in the custom Cornix indicator controller |
+| Left indicator power | `P0_13`, active high, init delay | Ported in the custom Cornix indicator controller |
+| Right indicator power | `P0_24`, active high, init delay | Ported in the custom Cornix indicator controller |
+| Left WS2812 data | `P0_24` | Ported with PWM0 + EasyDMA |
+| Right WS2812 data | `P0_13` | Ported with PWM0 + EasyDMA |
 | Indicator chain | two WS2812 LEDs, brightness 64 | Ported as battery/status LEDs, not as a Vial lighting menu |
 | Idle split sleep | ZMK marks the matrix as a wake source | Ported as RMK `split_central_sleep_timeout_seconds = 900` |
 
@@ -29,13 +30,13 @@ This file tracks Cornix LP hardware facts from `hitsmaxft/zmk-keyboard-cornix` a
 
 The ZMK indicator shield uses SPI3 with a two-LED WS2812 chain and brightness 64. This RMK fork implements the same physical pins with a custom controller in `src/indicator.rs`.
 
-The controller maps the first electrical LED in the WS2812 chain to battery state and the second to host/split status. Depending on viewing orientation, the physical left-to-right order can appear reversed. The color policy is official-like rather than recovered byte-for-byte from PandaKBLab binaries. It powers the indicator rail down when RMK reports sleep. RMK's Vial implementation still reports `"lighting": "none"`, matching the official V1.12 metadata; these LEDs are firmware status indicators, not Vial-editable RGB lighting.
+The controller maps the first electrical LED in the WS2812 chain to the upstream "inner" pixel and the second to the upstream "outer" pixel. Depending on viewing orientation, the physical left-to-right order can appear reversed. The color policy follows `numachang/cornix-rmk-custom`: inner is battery/charging and central-side peer notifications; outer is central-side Bluetooth profile or peripheral-side central-link status. RMK's Vial implementation still reports `"lighting": "none"`, matching the official V1.12 metadata; these LEDs are firmware status indicators, not Vial-editable RGB lighting.
 
-The battery/status LED can show RMK charging state, but this keyboard config currently has no `charge_state` pin. The controller therefore also treats RMK's active USB keyboard path as a charging proxy and shows the battery LED teal while USB is active. When not charging or USB-active, the battery LED turns off after a short status window that starts when the LED rail is actually initialized.
+Charging follows the upstream behavior visually: while charging or while the USB keyboard path is active as a local proxy, the inner LED breathes green until battery is at least 95%, then shows steady green for a short window and turns off. Low battery at or below 20% is a red double blink.
 
-The link/status LED blinks while its side-specific connection is not ready. On the central half, that means the host connection only: searching/unknown BLE state blinks blue, disconnected BLE state blinks red, connected BLE shows blue briefly, and active USB shows teal. On the peripheral half, the LED reports the right-to-left split connection. Once connected, it shows the connected color briefly, then turns off until the next relevant status change.
+The central outer LED uses active Bluetooth profile colors: profile 0 green, profile 1 red, profile 2+ blue. It blinks the profile color while advertising/searching and shows it briefly after host connection. The central inner LED reports the peripheral link with blue blink/brief blue-on. The peripheral outer LED reports the right-to-left split link with the same blue blink/brief blue-on behavior.
 
-Embassy nRF exposes standard SPIM clock selections rather than ZMK's exact 6.4 MHz setting. The RMK controller uses 4 MHz SPIM with 5-bit WS2812 symbols, yielding 1.25 us LED bit cells.
+The RMK controller uses PWM0 with EasyDMA, following the hardware-verified approach from `numachang/cornix-rmk-custom`. With a 16 MHz PWM clock and `COUNTERTOP = 20`, each WS2812 bit is one 1.25 us PWM period: duty 6 for `0`, duty 13 for `1`, then a low reset tail.
 
 ## Not Ported Yet
 
