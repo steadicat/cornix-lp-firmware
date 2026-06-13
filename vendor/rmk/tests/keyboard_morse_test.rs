@@ -98,9 +98,9 @@ fn test_morse_mt_2() {
             [0, 0, false, 10], // Release A
         ],
         expected_reports: [
-            [0, [kc_to_u8!(A), 0, 0, 0, 0, 0]], // Press A
-            [0, [kc_to_u8!(A), kc_to_u8!(B), 0, 0, 0, 0]], // Press B
-            [0, [kc_to_u8!(A), 0, 0, 0, 0, 0]], // Release B
+            [0, [kc_to_u8!(B), 0, 0, 0, 0, 0]], // Press B after mt!(B, LShift) resolves
+            [0, [kc_to_u8!(B), kc_to_u8!(A), 0, 0, 0, 0]], // Replay delayed A
+            [0, [0, kc_to_u8!(A), 0, 0, 0, 0]], // Release B
             [0, [0, 0, 0, 0, 0, 0]], // Release A
         ]
     };
@@ -193,8 +193,8 @@ fn test_morse_mt_timeout_1() {
             [0, 1, false, 10], // Release mt!(B, LShift)
         ],
         expected_reports: [
-            [0, [kc_to_u8!(A), 0, 0, 0, 0, 0]], // Press A
-            [KC_LSHIFT, [kc_to_u8!(A), 0, 0, 0, 0, 0]], // Timeout
+            [KC_LSHIFT, [0, 0, 0, 0, 0, 0]], // Timeout
+            [KC_LSHIFT, [kc_to_u8!(A), 0, 0, 0, 0, 0]], // Replay delayed A
             [KC_LSHIFT, [0, 0, 0, 0, 0, 0]], // Release A
             [0, [0, 0, 0, 0, 0, 0]], // Release mt!(B, LShift)
         ]
@@ -212,8 +212,8 @@ fn test_morse_mt_timeout_2() {
             [0, 0, false, 10], // Release A
         ],
         expected_reports: [
-            [0, [kc_to_u8!(A), 0, 0, 0, 0, 0]], // Press A
-            [KC_LSHIFT, [kc_to_u8!(A), 0, 0, 0, 0, 0]], // Press mt!(B, LShift)
+            [KC_LSHIFT, [0, 0, 0, 0, 0, 0]], // Timeout
+            [KC_LSHIFT, [kc_to_u8!(A), 0, 0, 0, 0, 0]], // Replay delayed A
             [0, [kc_to_u8!(A), 0, 0, 0, 0, 0]], // Release mt!(B, LShift)
             [0, [0, 0, 0, 0, 0, 0]], // Release A
         ]
@@ -402,9 +402,9 @@ fn test_morse_lt_2() {
             [0, 0, false, 10], // Release A
         ],
         expected_reports: [
-            [0, [kc_to_u8!(A), 0, 0, 0, 0, 0]], // Press A
-            [0, [kc_to_u8!(A), kc_to_u8!(D), 0, 0, 0, 0]], // Press D
-            [0, [kc_to_u8!(A), 0, 0, 0, 0, 0]], // Release D
+            [0, [kc_to_u8!(D), 0, 0, 0, 0, 0]], // Press D after lt!(1, D) resolves
+            [0, [kc_to_u8!(D), kc_to_u8!(A), 0, 0, 0, 0]], // Replay delayed A
+            [0, [0, kc_to_u8!(A), 0, 0, 0, 0]], // Release D
             [0, [0, 0, 0, 0, 0, 0]], // Release A
         ]
     };
@@ -497,8 +497,8 @@ fn test_morse_lt_timeout_1() {
             [0, 3, false, 10], // Release lt!(1, D)
         ],
         expected_reports: [
-            [0, [kc_to_u8!(A), 0, 0, 0, 0, 0]], // Press A
-            [0, [0, 0, 0, 0, 0, 0]], // Release A
+            [0, [kc_to_u8!(Kp1), 0, 0, 0, 0, 0]], // Replay delayed A on layer 1
+            [0, [0, 0, 0, 0, 0, 0]], // Release Kp1
         ]
     };
 }
@@ -514,8 +514,8 @@ fn test_morse_lt_timeout_2() {
             [0, 0, false, 10], // Release A
         ],
         expected_reports: [
-            [0, [kc_to_u8!(A), 0, 0, 0, 0, 0]], // Press A
-            [0, [0, 0, 0, 0, 0, 0]], // Release A
+            [0, [kc_to_u8!(Kp1), 0, 0, 0, 0, 0]], // Replay delayed A on layer 1
+            [0, [0, 0, 0, 0, 0, 0]], // Release Kp1
         ]
     };
 }
