@@ -17,7 +17,7 @@ use rmk::keyboard::combo::{Combo, ComboConfig};
 use rmk::types::action::{Action, KeyAction};
 use rmk::types::keycode::{HidKeyCode, KeyCode};
 use rmk::types::modifier::ModifierCombination;
-use rmk::{a, k, mo};
+use rmk::{a, k, lt, mo};
 use rmk_types::morse::{MorseMode, MorseProfile};
 
 use crate::common::morse::create_morse_keyboard;
@@ -1768,6 +1768,40 @@ fn create_normal_unilateral_keyboard() -> Keyboard<'static> {
     )
 }
 
+fn create_normal_layer_tap_slash_keyboard() -> Keyboard<'static> {
+    let keymap = [[[lt!(1, Space), k!(Slash)]], [[a!(No), k!(Backslash)]]];
+
+    let behavior_config = BehaviorConfig {
+        morse: MorsesConfig {
+            enable_flow_tap: false,
+            default_profile: MorseProfile::new(Some(true), Some(MorseMode::Normal), Some(250), Some(250)),
+            ..Default::default()
+        },
+        ..BehaviorConfig::default()
+    };
+
+    let behavior_config: &'static mut BehaviorConfig = Box::leak(Box::new(behavior_config));
+    let per_key_config: &'static PositionalConfig<1, 2> = Box::leak(Box::new(PositionalConfig::default()));
+    Keyboard::new(wrap_keymap(keymap, per_key_config, behavior_config))
+}
+
+fn create_normal_layer_tap_d_keyboard() -> Keyboard<'static> {
+    let keymap = [[[lt!(1, Space), k!(D)]], [[a!(No), k!(Kp1)]]];
+
+    let behavior_config = BehaviorConfig {
+        morse: MorsesConfig {
+            enable_flow_tap: false,
+            default_profile: MorseProfile::new(Some(true), Some(MorseMode::Normal), Some(250), Some(250)),
+            ..Default::default()
+        },
+        ..BehaviorConfig::default()
+    };
+
+    let behavior_config: &'static mut BehaviorConfig = Box::leak(Box::new(behavior_config));
+    let per_key_config: &'static PositionalConfig<1, 2> = Box::leak(Box::new(PositionalConfig::default()));
+    Keyboard::new(wrap_keymap(keymap, per_key_config, behavior_config))
+}
+
 /// Same-hand roll in Normal mode: mt!(B, LShift) (col 1, Left) then A (col 0, Left).
 /// The HRM tap must fire BEFORE the plain key so the roll comes out in the pressed order.
 /// Previously, Normal mode + unilateral_tap only resolved on key-release, causing the
@@ -1787,6 +1821,63 @@ fn test_normal_mode_same_hand_roll_order() {
             [0, [kc_to_u8!(B), kc_to_u8!(A), 0, 0, 0, 0]],   // A fires after
             [0, [kc_to_u8!(B), 0, 0, 0, 0, 0]],               // A released
             [0, [0, 0, 0, 0, 0, 0]],                          // B released
+        ]
+    };
+}
+
+#[test]
+fn test_normal_mode_opposite_hand_roll_order() {
+    key_sequence_test! {
+        keyboard: create_normal_unilateral_keyboard(),
+        sequence: [
+            [0, 4, true,  10],  // Press mt!(E, LAlt), Right hand
+            [0, 0, true,  10],  // Press A, Left hand
+            [0, 4, false, 10],  // Release mt!(E, LAlt) before hold timeout
+            [0, 0, false, 10],  // Release A
+        ],
+        expected_reports: [
+            [0, [kc_to_u8!(E), 0, 0, 0, 0, 0]],
+            [0, [kc_to_u8!(E), kc_to_u8!(A), 0, 0, 0, 0]],
+            [0, [0, kc_to_u8!(A), 0, 0, 0, 0]],
+            [0, [0, 0, 0, 0, 0, 0]],
+        ]
+    };
+}
+
+#[test]
+fn test_normal_mode_layer_tap_d_roll_order() {
+    key_sequence_test! {
+        keyboard: create_normal_layer_tap_d_keyboard(),
+        sequence: [
+            [0, 0, true,  10],  // Press lt!(1, Space)
+            [0, 1, true,  10],  // Press D before layer tap resolves
+            [0, 0, false, 10],  // Release lt!(1, Space) before hold timeout
+            [0, 1, false, 10],  // Release D
+        ],
+        expected_reports: [
+            [0, [kc_to_u8!(Space), 0, 0, 0, 0, 0]],
+            [0, [kc_to_u8!(Space), kc_to_u8!(D), 0, 0, 0, 0]],
+            [0, [0, kc_to_u8!(D), 0, 0, 0, 0]],
+            [0, [0, 0, 0, 0, 0, 0]],
+        ]
+    };
+}
+
+#[test]
+fn test_normal_mode_layer_tap_slash_roll_order() {
+    key_sequence_test! {
+        keyboard: create_normal_layer_tap_slash_keyboard(),
+        sequence: [
+            [0, 0, true,  10],  // Press lt!(1, Space)
+            [0, 1, true,  10],  // Press Slash before layer tap resolves
+            [0, 0, false, 10],  // Release lt!(1, Space) before hold timeout
+            [0, 1, false, 10],  // Release Slash
+        ],
+        expected_reports: [
+            [0, [kc_to_u8!(Space), 0, 0, 0, 0, 0]],
+            [0, [kc_to_u8!(Space), kc_to_u8!(Slash), 0, 0, 0, 0]],
+            [0, [0, kc_to_u8!(Slash), 0, 0, 0, 0]],
+            [0, [0, 0, 0, 0, 0, 0]],
         ]
     };
 }

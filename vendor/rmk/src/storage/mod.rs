@@ -876,8 +876,9 @@ const fn get_buffer_size() -> usize {
 #[cfg(test)]
 mod tests {
     use embassy_time::Duration;
+    use rmk_types::morse::{MorseMode, MorseProfile};
     use sequential_storage::cache::NoCache;
-    use sequential_storage::map::{MapConfig, MapStorage};
+    use sequential_storage::map::{MapConfig, MapStorage, Value};
 
     use super::*;
     use crate::config::{BehaviorConfig as RuntimeBehaviorConfig, StorageConfig as RuntimeStorageConfig};
@@ -991,6 +992,36 @@ mod tests {
         behavior.morse.prior_idle_time = Duration::from_millis(120);
 
         assert_eq!(stored_flow_tap_term(&behavior), 120);
+    }
+
+    #[test]
+    fn behavior_config_round_trip_preserves_vial_tap_hold_settings() {
+        let mut behavior = config::BehaviorConfig::default();
+        behavior.morse.enable_flow_tap = true;
+        behavior.morse.prior_idle_time = Duration::from_millis(160);
+        behavior.morse.default_profile =
+            MorseProfile::new(Some(true), Some(MorseMode::PermissiveHold), Some(240), Some(240));
+
+        let mut buffer = [0u8; 128];
+        let storage_data = StorageData::from(&behavior);
+        let serialized_size = StorageData::serialize_into(&storage_data, &mut buffer).unwrap();
+        let (StorageData::BehaviorConfig(stored), _) =
+            StorageData::deserialize_from(&buffer[..serialized_size]).unwrap()
+        else {
+            panic!("expected behavior config");
+        };
+
+        let mut reloaded = config::BehaviorConfig::default();
+        reloaded.morse.enable_flow_tap = stored.prior_idle_time > 0;
+        reloaded.morse.prior_idle_time = Duration::from_millis(stored.prior_idle_time as u64);
+        reloaded.morse.default_profile = stored.morse_default_profile;
+
+        assert!(reloaded.morse.enable_flow_tap);
+        assert_eq!(reloaded.morse.prior_idle_time, Duration::from_millis(160));
+        assert_eq!(reloaded.morse.default_profile.mode(), Some(MorseMode::PermissiveHold));
+        assert_eq!(reloaded.morse.default_profile.unilateral_tap(), Some(true));
+        assert_eq!(reloaded.morse.default_profile.hold_timeout_ms(), Some(240));
+        assert_eq!(reloaded.morse.default_profile.gap_timeout_ms(), Some(240));
     }
 
     #[test]

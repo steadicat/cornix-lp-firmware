@@ -9,6 +9,34 @@ use crate::hid::ViaReport;
 use crate::host::context::KeyboardContext;
 use crate::host::via::keycode_convert::{from_via_keycode, to_via_keycode};
 
+fn updated_tap_hold_mode_for_vial_setting(
+    current: Option<MorseMode>,
+    setting: SettingKey,
+    enabled: bool,
+) -> Option<MorseMode> {
+    match setting {
+        SettingKey::PermissiveHold => {
+            if enabled {
+                Some(MorseMode::PermissiveHold)
+            } else if current == Some(MorseMode::PermissiveHold) {
+                Some(MorseMode::Normal)
+            } else {
+                current
+            }
+        }
+        SettingKey::HoldOnOtherKeyPress => {
+            if enabled {
+                Some(MorseMode::HoldOnOtherPress)
+            } else if current == Some(MorseMode::HoldOnOtherPress) {
+                Some(MorseMode::Normal)
+            } else {
+                current
+            }
+        }
+        _ => current,
+    }
+}
+
 /// Note: vial uses little endian, while via uses big endian
 pub(crate) async fn process_vial<'a>(
     report: &mut ViaReport,
@@ -201,38 +229,15 @@ pub(crate) async fn process_vial<'a>(
                 SettingKey::PermissiveHold => {
                     let enabled = report.output_data[4] == 1;
                     let old = ctx.morse_default_profile();
-                    let new_mode = if enabled {
-                        // Hold On Other Key Press has higher priority
-                        if old.mode() == Some(MorseMode::HoldOnOtherPress) {
-                            old.mode()
-                        } else {
-                            // Enable: Set to Permissive Hold
-                            Some(MorseMode::PermissiveHold)
-                        }
-                    } else {
-                        // Disable: Only set to Normal if currently PermissiveHold
-                        if old.mode() == Some(MorseMode::PermissiveHold) {
-                            Some(MorseMode::Normal)
-                        } else {
-                            old.mode() // Keep current mode unchanged
-                        }
-                    };
+                    let new_mode =
+                        updated_tap_hold_mode_for_vial_setting(old.mode(), SettingKey::PermissiveHold, enabled);
                     ctx.set_morse_default_profile(old.with_mode(new_mode)).await;
                 }
                 SettingKey::HoldOnOtherKeyPress => {
                     let enabled = report.output_data[4] == 1;
                     let old = ctx.morse_default_profile();
-                    let new_mode = if enabled {
-                        // Enable: Set to HoldOnOtherPress (will override other modes)
-                        Some(MorseMode::HoldOnOtherPress)
-                    } else {
-                        // Disable: Only set to Normal if currently HoldOnOtherPress
-                        if old.mode() == Some(MorseMode::HoldOnOtherPress) {
-                            Some(MorseMode::Normal)
-                        } else {
-                            old.mode() // Keep current mode unchanged
-                        }
-                    };
+                    let new_mode =
+                        updated_tap_hold_mode_for_vial_setting(old.mode(), SettingKey::HoldOnOtherKeyPress, enabled);
                     ctx.set_morse_default_profile(old.with_mode(new_mode)).await;
                 }
                 SettingKey::UnilateralTap => {
@@ -432,6 +437,38 @@ mod tests {
     use super::*;
     use crate::COMBO_MAX_LENGTH;
     use crate::storage::StorageData;
+
+    #[test]
+    fn saved_permissive_hold_setting_overrides_compiled_hold_on_other_default() {
+        let mut mode = Some(MorseMode::HoldOnOtherPress);
+
+        mode = updated_tap_hold_mode_for_vial_setting(mode, SettingKey::PermissiveHold, true);
+        mode = updated_tap_hold_mode_for_vial_setting(mode, SettingKey::HoldOnOtherKeyPress, false);
+
+        assert_eq!(mode, Some(MorseMode::PermissiveHold));
+    }
+
+    #[test]
+    fn saved_permissive_hold_setting_is_order_independent() {
+        let mut mode = Some(MorseMode::HoldOnOtherPress);
+
+        mode = updated_tap_hold_mode_for_vial_setting(mode, SettingKey::HoldOnOtherKeyPress, false);
+        mode = updated_tap_hold_mode_for_vial_setting(mode, SettingKey::PermissiveHold, true);
+
+        assert_eq!(mode, Some(MorseMode::PermissiveHold));
+    }
+
+    #[test]
+    fn disabling_inactive_vial_tap_hold_mode_keeps_current_mode() {
+        let mode = updated_tap_hold_mode_for_vial_setting(
+            Some(MorseMode::PermissiveHold),
+            SettingKey::HoldOnOtherKeyPress,
+            false,
+        );
+
+        assert_eq!(mode, Some(MorseMode::PermissiveHold));
+    }
+
     #[test]
     fn test_combo_serialization_deserialization() {
         let mut actions = heapless::Vec::<KeyAction, COMBO_MAX_LENGTH>::new();

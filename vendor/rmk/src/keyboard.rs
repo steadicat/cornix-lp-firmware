@@ -828,6 +828,11 @@ impl<'a> Keyboard<'a> {
                                         continue;
                                     }
                                 }
+
+                                // Otherwise keep the new key behind the unresolved tap-hold key.
+                                // Normal mode still has to preserve typed order while waiting for
+                                // the original key to release or time out.
+                                decision_for_current_key = KeyBehaviorDecision::Buffer;
                             }
                         }
                     } else {
