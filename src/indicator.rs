@@ -2,8 +2,8 @@ use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::pwm::{self, SequenceConfig, SequencePwm, SingleSequenceMode, SingleSequencer};
 use embassy_time::Timer;
 use rmk::event::{
-    BatteryStatusEvent, CentralConnectedEvent, ChargingStateEvent, ConnectionStatusChangeEvent, ConnectionType,
-    LedIndicatorEvent, PeripheralConnectedEvent, SleepStateEvent,
+    BatteryStatusEvent, CentralConnectedEvent, ChargingStateEvent, ConnectionStatusChangeEvent,
+    ConnectionType, LedIndicatorEvent, PeripheralConnectedEvent, SleepStateEvent,
 };
 use rmk::macros::processor;
 use rmk::types::battery::{BatteryStatus, ChargeState};
@@ -105,7 +105,6 @@ pub struct CornixIndicator {
     side: Side,
     battery: u8,
     charging_line: bool,
-    usb_keyboard_active: bool,
     host_transport: HostTransport,
     ble_profile: u8,
     ble_connected: bool,
@@ -126,7 +125,6 @@ impl CornixIndicator {
             side,
             battery: 100,
             charging_line: false,
-            usb_keyboard_active: false,
             host_transport: HostTransport::Ble,
             ble_profile: 0,
             ble_connected: false,
@@ -140,19 +138,12 @@ impl CornixIndicator {
     }
 
     fn charging(&self) -> bool {
-        self.charging_line || self.usb_keyboard_active
+        self.charging_line
     }
 
     fn set_charging_line(&mut self, charging: bool) {
         if charging != self.charging_line {
             self.charging_line = charging;
-            self.frame = 0;
-        }
-    }
-
-    fn set_usb_keyboard_active(&mut self, active: bool) {
-        if active != self.usb_keyboard_active {
-            self.usb_keyboard_active = active;
             self.frame = 0;
         }
     }
@@ -354,21 +345,17 @@ impl CornixIndicator {
         self.ble_profile = status.ble.profile;
         self.ble_connected = connected;
         self.ble_advertising = advertising;
-        if self.host_transport == HostTransport::Ble {
-            self.set_usb_keyboard_active(false);
-        }
         self.refresh().await;
     }
 
     async fn on_led_indicator_event(&mut self, _event: LedIndicatorEvent) {
-        if self.side == Side::Central {
-            if self.host_transport == HostTransport::Usb {
-                self.set_usb_keyboard_active(true);
-            } else if !self.ble_connected {
-                self.ble_connected = true;
-                self.ble_advertising = false;
-                self.frame = 0;
-            }
+        if self.side == Side::Central
+            && self.host_transport == HostTransport::Ble
+            && !self.ble_connected
+        {
+            self.ble_connected = true;
+            self.ble_advertising = false;
+            self.frame = 0;
         }
         self.refresh().await;
     }
@@ -394,9 +381,6 @@ impl CornixIndicator {
         if sleeping != self.sleeping {
             self.sleeping = sleeping;
             self.frame = 0;
-        }
-        if sleeping {
-            self.set_usb_keyboard_active(false);
         }
         self.refresh().await;
     }
