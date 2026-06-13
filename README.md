@@ -9,24 +9,38 @@ Standalone RMK firmware for the Cornix LP split low-profile keyboard. The first 
 
 ## Build
 
-Install the embedded Rust target and the small helper tools used by RMK:
+On macOS, install the native system dependency with Homebrew:
 
 ```sh
-rustup target add thumbv7em-none-eabihf
-cargo install flip-link cargo-binutils cargo-make cargo-hex-to-uf2
-rustup component add llvm-tools
+brew bundle install
 ```
 
-If multiple Rust installs are present, make sure `~/.cargo/bin` is on `PATH` so `cargo`, `flip-link`, and the cargo subcommands resolve from the same rustup toolchain.
+Then let the repo install any missing firmware Cargo helper tools:
+
+```sh
+cargo make setup
+```
+
+If `cargo make` is not already installed, install just that Cargo subcommand
+first:
+
+```sh
+cargo install cargo-make --locked
+```
+
+`rust-toolchain.toml` pins the rustup-managed Rust toolchain and installs
+`thumbv7em-none-eabihf`, `llvm-tools`, `rustfmt`, and `clippy`. The cargo-make
+tasks route Cargo through `tools/rust-env.sh`, so the build still uses that
+rustup toolchain even on Macs where the shell's default `cargo` comes from
+Homebrew. The wrapper also sets Homebrew LLVM/libclang plus the macOS SDK path
+for bindgen.
 
 Check and build both halves:
 
 ```sh
-cargo fmt --check
-cargo check --release --bin central
-cargo check --release --bin peripheral
-cargo build --release --bin central
-cargo build --release --bin peripheral
+cargo make fmt
+cargo make check
+cargo make build
 ```
 
 Generate UF2 files:
@@ -37,8 +51,8 @@ cargo make uf2 --release
 
 Expected public artifacts:
 
-- `cornix-left.uf2`
-- `cornix-right.uf2`
+- `dist/cornix-left.uf2`
+- `dist/cornix-right.uf2`
 
 ## Flashing Notes
 

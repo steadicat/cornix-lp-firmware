@@ -1,5 +1,6 @@
 /target/
 /vendor/*/target/
+/dist/
 /.embuild/
 /*.hex
 /*.uf2

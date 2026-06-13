@@ -43,7 +43,8 @@ fn generate_vial_config() {
     .map(|s| "#[allow(clippy::redundant_static_lifetimes)]\n".to_owned() + s.as_str())
     .join("\n");
 
-    let keyboard_toml = fs::read("keyboard.toml").expect("keyboard.toml is required for RMK config");
+    let keyboard_toml =
+        fs::read("keyboard.toml").expect("keyboard.toml is required for RMK config");
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     hasher.write(&keyboard_toml);
     let keyboard_toml_fingerprint = hasher.finish();
