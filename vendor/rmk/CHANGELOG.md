@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Add Azoteq IQS5xx (IQS550 / IQS572 / IQS525) trackpad driver, used by Azoteq's TPS43/TPS65 modules. Supports operation with or without an `RDY` pin and is configurable via `keyboard.toml` on nRF52 / RP2040; currently publishes single-finger relative cursor movement only ([#29](https://github.com/HaoboGu/rmk/issues/29))
+- Add PMW3360 / PMW3389 optical mouse sensor support
+- Add `report_hz` option for Pmw3610Device
+- Add `bootmagic` config: hold a designated key during boot to drop into the chip bootloader. Works on unibody and on each half of a split independently. Particularly useful for split peripherals whose BOOTSEL button is physically inaccessible ([#457](https://github.com/HaoboGu/rmk/issues/457)).
+- Make `rmk::boot` module public so user code can call `boot::jump_to_bootloader()` directly
+
+### Changed
+
+- **BREAKING**: `PollingController::INTERVAL` constant is now `PollingController::interval()` method, allowing dynamic interval configuration at runtime
+- **BREAKING**: PointingDevice and PointingProcessor replace Pmw3610Device and Pmw3610Processor. For the Pmw3610 the calls of ::new() for these stay the same, only the name changes. If using Rust to configure the keyboard change the calls, if using Toml nothing needs to be done.
+- **BREAKING**: `MouseKeyConfig` fields renamed: `time_to_max` → `ticks_to_max`, `wheel_time_to_max` → `wheel_ticks_to_max`, `wheel_max_speed_multiplier` → `wheel_max_speed`
+- Refactor mouse key state machine into a dedicated module with per-direction press counts, independent movement/wheel repeat scheduling, and configurable acceleration curves
+- Optimize the timing for motion read and sending reports on the PMW3610
+- Correct the delay length of PMW3610 to the precise value
+
+### Fixed
+
+- Fix stuck key when a combo key is re-pressed while the combo is still held. Previously the re-press overwrote the combo output's HID slot, and on combo release the output couldn't be unregistered, leaving the re-pressed key stuck on the host.
+- Fix stuck combo output when overlapping triggered combos share a key (e.g. `M+,` and `,+.` both containing Comma). Releasing the shared key now dispatches the release of every fully-unwound combo output, not just the first.
+- Fix `unregister_keycode` choosing the wrong HID slot when a combo output and another pressed key share a position. Slot lookup now prefers a `(pos, keycode)` match and falls back to keycode-only.
+- Fix spurious "Timer buffer full" warns after 16 distinct key positions are pressed. The per-position timer `LinearMap` is gone; press time is now threaded as a parameter through the morse-press dispatch.
+
 ## [0.8.2] - 2025-12-18
 
 ### Added
@@ -30,7 +52,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix compilation error when use `Macro()` in keymap config
 - Fix row2col matrix doesn't work issue
 - Fix `lm` key is not properly released
-
 
 ## [0.8.1] - 2025-11-25
 
@@ -64,23 +85,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Bump lots of dependencies to latest version
-- Refactor tap-hold, and introduced morse_actions to tap-dance to support real morse code like tap/hold patterns 
+- Refactor tap-hold, and introduced morse_actions to tap-dance to support real morse code like tap/hold patterns
 - Positional and per key morse profile configuration introduced for tap hold like, morse like keys
 - Rename chordal tap to unilateral tap
 - Rewrite led indicator, use controller system
 - Rename `RapidDebouncer` to `FastDebouncer`
 - Remove `col2row`, `bidirectional` and `rapid_debouncer` features
 - Use postcard for serialization/deserialization of storage data
-- Change central sleep timeout to be in seconds 
+- Change central sleep timeout to be in seconds
 - Migrate documentation site to rspress
 
 ### Fixed
 
 - Fix invalid macro key
 - Fix wrong peripheral number setting in Rust split examples
-- Fix modifier activation in lm 
+- Fix modifier activation in lm
 - Fix combo reorder issue
-- Fix key stuck when one shot key rolling with tap hold 
+- Fix key stuck when one shot key rolling with tap hold
 - Fix flow-tap misorder
 - Fix peripheral message loss
 
@@ -98,7 +119,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Permissive hold key rolling error
-- Chordal tap triggers tap unexpectly 
+- Chordal tap triggers tap unexpectly
 
 ## [0.7.7] - 2025-07-21
 
@@ -109,7 +130,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- CI bloat workflow can comment on PR now  
+- CI bloat workflow can comment on PR now
 - Report battery percentage instead of adc value, and do the report instantly after boot
 - Report battery level via BLE only when there's a key action recently
 
@@ -123,8 +144,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Move encoder events processing to `Keyboard`
-- Use bitfield_struct's native defmt formatting 
-- Use device id as the serial number for nRF 
+- Use bitfield_struct's native defmt formatting
+- Use device id as the serial number for nRF
 - Move `KeyAction::WithModifier` to `Action::KeyWithModifier`
 - ​​Reset the sidebar style in user documentation​
 
@@ -132,7 +153,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add ESP32 heterogeneous example, which uses ESP32C6 as central and ESP32C3 as peripheral
 - Add mouse acceleration support
-- Add consts for single-bit structs 
+- Add consts for single-bit structs
 
 ### Fixed
 
@@ -141,7 +162,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Key trigger issue when combo is used with one-shot key
 - Key trigger issue when there's overlapped combo
 - Don't send battery notification according to control point value from host
-- Update addr stored in peripheral after re-pairing 
+- Update addr stored in peripheral after re-pairing
 - Repeat mouse key when multiple mouse keys are pressed
 
 ## [0.7.5] - 2025-07-06
@@ -166,7 +187,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Light service is wrongly disabled
 - Correctly update connection parameters after connected to the host
-- Remove need for quotes on OSM 
+- Remove need for quotes on OSM
 
 ## [0.7.3] - 2025-06-18
 
@@ -199,8 +220,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Move `Controller` behind a feature flag 
-
+- Move `Controller` behind a feature flag
 
 ## [0.7.1] - 2025-06-04
 
@@ -214,7 +234,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **BREAKING**: The BLE stack is migrated to [TrouBLE](https://github.com/embassy-rs/trouble/)
 - **BREAKING**: Add `rmk-config` and use `[env]` in `.cargo/config.toml` to configure the path of `keyboard.toml`
-- Optimize the size of buffer used in USB 
+- Optimize the size of buffer used in USB
 - A new documentation site is released! Check out [rmk.rs](https://rmk.rs)
 
 ### Added
@@ -248,7 +268,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Wrong GPIO pulls for stm32
-- Combo cannot be triggered correctly when there's overlap between combos 
+- Combo cannot be triggered correctly when there's overlap between combos
 - Battery level led indicator failure
 
 ## [0.6.0] - 2025-04-06
@@ -294,7 +314,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Record positions of triggered keys, fix key stuck 
+- Record positions of triggered keys, fix key stuck
 - Remove invalid PHY type setting between splits
 - Receive keys from peripheral when there's no connection
 - Always sync the connection state to fix the unexpected lost of peripherals

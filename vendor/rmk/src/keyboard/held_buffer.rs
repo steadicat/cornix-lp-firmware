@@ -1,8 +1,8 @@
 use embassy_time::Instant;
 use rmk_types::action::{Action, KeyAction};
+use rmk_types::morse::MorsePattern;
 
 use crate::event::{KeyboardEvent, KeyboardEventPos};
-use crate::morse::MorsePattern;
 
 /// The buffer of held keys.
 #[derive(Debug, Default, Clone)]
@@ -105,6 +105,15 @@ pub enum KeyState {
     /// After a release event is received for a key still kept in the HeldBuffer - so morse pattern may continue
     /// The data represents the already completed morse pattern
     Released(MorsePattern),
+
+    /// After a tap has been fired early (early fire optimization), but the key
+    /// remains in the buffer to allow hold_after_tap continuation.
+    EarlyFired(MorsePattern),
+
+    /// After flow-tap resolved the key as a tap: the tap action's press HID report
+    /// is sent and held while the key is physically held. On release the action is
+    /// released and the key is kept as `EarlyFired` so hold_after_tap can continue.
+    FlowTapped(Action),
 
     /// The corresponding action is already executed (so the Pressed HID report is sent),
     /// but the release HID report is not sent yet (will be sent only when the corresponding

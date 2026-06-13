@@ -1,9 +1,9 @@
-use embassy_time::{Instant, Timer};
+use embassy_time::Timer;
+use rmk_macro::input_device;
 
 use crate::debounce::{DebounceState, DebouncerTrait};
 use crate::driver::flex_pin::FlexPin;
-use crate::event::{Event, KeyboardEvent};
-use crate::input_device::InputDevice;
+use crate::event::KeyboardEvent;
 use crate::matrix::{KeyState, MatrixTrait};
 
 pub enum ScanLocation {
@@ -12,6 +12,7 @@ pub enum ScanLocation {
 }
 
 /// Matrix is the physical pcb layout of the keyboard matrix.
+#[input_device(publish = KeyboardEvent)]
 pub struct BidirectionalMatrix<
     Pin: FlexPin,
     D: DebouncerTrait<ROW, COL>,
@@ -25,8 +26,6 @@ pub struct BidirectionalMatrix<
     debouncer: D,
     /// Key state matrix
     key_state: [[KeyState; COL]; ROW],
-    /// Start scanning
-    scan_start: Option<Instant>,
     /// Current scan pos: (row_idx, col_idx)
     scan_pos: (usize, usize),
     /// Scan map
@@ -42,17 +41,16 @@ impl<Pin: FlexPin, D: DebouncerTrait<ROW, COL>, const PIN_NUM: usize, const ROW:
             pins,
             debouncer,
             key_state: [[KeyState::new(); COL]; ROW],
-            scan_start: None,
             scan_pos: (0, 0),
             scan_map,
         }
     }
 }
 
-impl<Pin: FlexPin, D: DebouncerTrait<ROW, COL>, const PIN_NUM: usize, const ROW: usize, const COL: usize> InputDevice
-    for BidirectionalMatrix<Pin, D, PIN_NUM, ROW, COL>
+impl<Pin: FlexPin, D: DebouncerTrait<ROW, COL>, const PIN_NUM: usize, const ROW: usize, const COL: usize>
+    BidirectionalMatrix<Pin, D, PIN_NUM, ROW, COL>
 {
-    async fn read_event(&mut self) -> crate::event::Event {
+    async fn read_keyboard_event(&mut self) -> KeyboardEvent {
         loop {
             let (scan_x_start, scan_y_start) = self.scan_pos;
 
@@ -79,11 +77,14 @@ impl<Pin: FlexPin, D: DebouncerTrait<ROW, COL>, const PIN_NUM: usize, const ROW:
                         if let DebounceState::Debounced = debounce_state {
                             self.key_state[scan_y_idx][scan_x_idx].toggle_pressed();
                             self.scan_pos = (scan_y_idx, scan_x_idx);
-                            return Event::Key(KeyboardEvent::key(
+                            // Pull output pin back to low before returning
+                            out_pin.set_low().ok();
+                            out_pin.set_as_input();
+                            return KeyboardEvent::key(
                                 scan_y_idx as u8,
                                 scan_x_idx as u8,
                                 self.key_state[scan_y_idx][scan_x_idx].pressed,
-                            ));
+                            );
                         }
 
                         // Pull output pin back to low

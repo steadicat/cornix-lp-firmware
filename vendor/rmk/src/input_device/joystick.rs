@@ -1,37 +1,22 @@
-use core::cell::RefCell;
-
+use rmk_macro::processor;
 use usbd_hid::descriptor::MouseReport;
 
-use crate::channel::KEYBOARD_REPORT_CHANNEL;
-use crate::event::Event;
+use crate::channel::send_hid_report;
+use crate::event::PointingEvent;
 use crate::hid::Report;
-use crate::input_device::{InputProcessor, ProcessResult};
 use crate::keymap::KeyMap;
 
-pub struct JoystickProcessor<
-    'a,
-    const ROW: usize,
-    const COL: usize,
-    const NUM_LAYER: usize,
-    const NUM_ENCODER: usize,
-    const N: usize,
-> {
+#[processor(subscribe = [PointingEvent])]
+pub struct JoystickProcessor<'a, const N: usize> {
     transform: [[i16; N]; N],
     bias: [i16; N],
-    keymap: &'a RefCell<KeyMap<'a, ROW, COL, NUM_LAYER, NUM_ENCODER>>,
+    keymap: &'a KeyMap<'a>,
     record: [i16; N],
     resolution: u16,
 }
 
-impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize, const N: usize>
-    JoystickProcessor<'a, ROW, COL, NUM_LAYER, NUM_ENCODER, N>
-{
-    pub fn new(
-        transform: [[i16; N]; N],
-        bias: [i16; N],
-        resolution: u16,
-        keymap: &'a RefCell<KeyMap<'a, ROW, COL, NUM_LAYER, NUM_ENCODER>>,
-    ) -> Self {
+impl<'a, const N: usize> JoystickProcessor<'a, N> {
+    pub fn new(transform: [[i16; N]; N], bias: [i16; N], resolution: u16, keymap: &'a KeyMap<'a>) -> Self {
         Self {
             transform,
             bias,
@@ -40,6 +25,15 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
             record: [0; N],
         }
     }
+
+    async fn on_pointing_event(&mut self, event: PointingEvent) {
+        for (rec, e) in self.record.iter_mut().zip(event.0.iter()) {
+            *rec = e.value;
+        }
+        debug!("Joystick info: {:#?}", self.record);
+        self.generate_report().await;
+    }
+
     async fn generate_report(&mut self) {
         let mut report = [0i16; N];
 
@@ -61,43 +55,16 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
 
         debug!("JoystickProcessor::generate_report: report = {:?}", report);
         // map to mouse
+        let buttons = self.keymap.mouse_buttons();
         let mouse_report = MouseReport {
-            buttons: 0,
+            buttons,
             x: (report[0].clamp(i8::MIN as i16, i8::MAX as i16)) as i8,
             y: (report[1].clamp(i8::MIN as i16, i8::MAX as i16)) as i8,
             wheel: 0,
             pan: 0,
         };
-        self.send_report(Report::MouseReport(mouse_report)).await;
-    }
-}
 
-impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize, const N: usize>
-    InputProcessor<'a, ROW, COL, NUM_LAYER, NUM_ENCODER>
-    for JoystickProcessor<'a, ROW, COL, NUM_LAYER, NUM_ENCODER, N>
-{
-    async fn process(&mut self, event: Event) -> ProcessResult {
-        embassy_time::Timer::after_millis(5).await;
-        match event {
-            Event::Joystick(event) => {
-                for (rec, e) in self.record.iter_mut().zip(event.iter()) {
-                    *rec = e.value;
-                }
-                debug!("Joystick info: {:#?}", self.record);
-                self.generate_report().await;
-                ProcessResult::Stop
-            }
-            _ => ProcessResult::Continue(event),
-        }
-    }
-
-    /// Send the processed report.
-    async fn send_report(&self, report: Report) {
-        KEYBOARD_REPORT_CHANNEL.send(report).await;
-    }
-
-    /// Get the current keymap
-    fn get_keymap(&self) -> &RefCell<KeyMap<'a, ROW, COL, NUM_LAYER, NUM_ENCODER>> {
-        self.keymap
+        // Send mouse report directly
+        send_hid_report(Report::MouseReport(mouse_report)).await;
     }
 }

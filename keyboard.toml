@@ -16,7 +16,7 @@ adc_divider_total = 2806
 charge_state.pin = "P0_01"
 charge_state.low_active = true
 default_tx_power = 8
-ble_use_2m_phy = true
+use_2m_phy = true
 
 [host]
 vial_enabled = true
@@ -138,6 +138,9 @@ clear_layout = false
 
 [behavior.one_shot]
 timeout = "3s"
+
+[behavior.one_shot_modifiers]
+quick_release = true
 
 [behavior.combo]
 timeout = "50ms"

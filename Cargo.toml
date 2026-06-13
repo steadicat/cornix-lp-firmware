@@ -12,31 +12,30 @@ rmk = { version = "0.8.2", features = [
     "split",
     "async_matrix",
     "adafruit_bl",
-    "controller",
 ] }
-nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc", rev = "11d5c3c", features = [
+nrf-sdc = { git = "https://github.com/haobogu/nrf-sdc", rev = "ffe59a7aefaaa145a3d2474602f33387f80dcefa", features = [
     "defmt",
     "peripheral",
     "central",
     "nrf52840",
 ] }
-nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc", rev = "11d5c3c", features = [
+nrf-mpsl = { git = "https://github.com/haobogu/nrf-sdc", rev = "ffe59a7aefaaa145a3d2474602f33387f80dcefa", features = [
     "defmt",
     "critical-section-impl",
     "nrf52840",
 ] }
-bt-hci = { version = "0.6", features = ["defmt"] }
+bt-hci = { version = "0.8", features = ["defmt"] }
 
-cortex-m = "0.7"
-cortex-m-rt = "0.7"
+cortex-m = "0.7.7"
+cortex-m-rt = "0.7.5"
 defmt = "1.0"
 defmt-rtt = "1.0"
-embassy-executor = { version = "0.9", features = [
+embassy-executor = { version = "0.10", features = [
     "defmt",
-    "arch-cortex-m",
+    "platform-cortex-m",
     "executor-thread",
 ] }
-embassy-nrf = { version = "0.8", features = [
+embassy-nrf = { version = "0.10", features = [
     "defmt",
     "nrf52840",
     "time-driver-rtc1",
@@ -51,7 +50,7 @@ embassy-time = { version = "0.5", features = [
     "tick-hz-32_768",
 ] }
 panic-probe = { version = "1.0", features = ["print-defmt"] }
-rand = { version = "0.8", default-features = false }
+rand = { version = "0.8.4", default-features = false }
 rand_chacha = { version = "0.3", default-features = false }
 rand_core = "0.6"
 static_cell = "2"
@@ -63,6 +62,9 @@ xz2 = "0.1"
 
 [patch.crates-io]
 rmk = { path = "vendor/rmk" }
+rmk-config = { path = "vendor/rmk-config" }
+rmk-macro = { path = "vendor/rmk-macro" }
+rmk-types = { path = "vendor/rmk-types" }
 
 [[bin]]
 name = "central"

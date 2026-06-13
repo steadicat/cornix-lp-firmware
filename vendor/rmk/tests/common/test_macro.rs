@@ -9,7 +9,7 @@ extern crate rmk;
 #[macro_export]
 macro_rules! key_sequence_test {
     (keyboard: $keyboard:expr, sequence: [$([$row:expr, $col:expr, $pressed:expr, $delay:expr]),* $(,)?], expected_reports: [$([$modifier:expr, $keys:expr]),* $(,)?]) => {
-        ::embassy_futures::block_on(async {
+        $crate::common::test_block_on::test_block_on(async {
             let mut keyboard = $keyboard;
             let sequence = vec![
                 $(
@@ -23,7 +23,7 @@ macro_rules! key_sequence_test {
             ];
             let expected_reports = vec![
                 $(
-                    rmk::descriptor::KeyboardReport {
+                    rmk::hid::KeyboardReport {
                         modifier: $modifier,
                         keycodes: $keys,
                         leds: 0,
@@ -38,10 +38,10 @@ macro_rules! key_sequence_test {
 }
 
 /// Convert a key `k!(key)` to the u8 representation in hid report.
-/// For example, `KeyCode::A` will be converted to `0x04`.
+/// For example, `HidKeyCode::A` will be converted to `0x04`.
 #[macro_export]
 macro_rules! kc_to_u8 {
     ($key: ident) => {
-        rmk::types::keycode::KeyCode::$key as u8
+        rmk::types::keycode::HidKeyCode::$key as u8
     };
 }

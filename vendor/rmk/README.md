@@ -18,7 +18,7 @@
 
 👉 Join our [Discord server](https://discord.gg/HHGA7pQxkG) for discussions, support, and community collaboration!
 
------ 
+-----
 [中文](https://github.com/HaoboGu/rmk/blob/main/README_zh.md)
 
 
@@ -46,6 +46,18 @@
 ### [sessile](https://github.com/willpuckett/sessile)
 
 <img src="https://raw.githubusercontent.com/HaoboGu/rmk/refs/heads/main/docs/docs/main/images/sessile.png" width="60%">
+
+### [Urchin](https://github.com/TimoBbz/urchin-rmk-firmware)
+
+<img src="https://raw.githubusercontent.com/HaoboGu/rmk/refs/heads/main/docs/docs/main/images/urchin.png" width="60%">
+
+### [zx66](https://github.com/zongxin1993/zx66-keybord)
+
+<img src="https://raw.githubusercontent.com/zongxin1993/zx66-keybord/refs/heads/master/Images/zx66-keybord_03.jpg" width="60%">
+
+### [rmk-zsa-voyager](https://github.com/jpds/rmk-zsa-voyager)
+
+<img src="https://raw.githubusercontent.com/HaoboGu/rmk/refs/heads/main/docs/docs/main/images/zsa-voyager.webp" width="60%">
 
 ## Getting Started
 
@@ -112,7 +124,7 @@ Browse the examples in the [`examples`](https://github.com/HaoboGu/rmk/tree/main
       Running `elf2uf2-rs -d 'target\thumbv6m-none-eabi\release\rmk-rp2040'`
       Found pico uf2 disk G:\
       Transfering program to pico
-      173.00 KB / 173.00 KB [=======================] 100.00 % 193.64 KB/s  
+      173.00 KB / 173.00 KB [=======================] 100.00 % 193.64 KB/s
       ```
 
 ## [Development Roadmap](https://rmk.rs/docs/development/roadmap)
