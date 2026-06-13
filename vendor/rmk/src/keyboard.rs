@@ -451,7 +451,8 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                     KeyState::Pressed(MorsePattern::default()),
                     press_time,
                     timeout_time,
-                ));
+                )
+                .with_combo_output(is_combo));
             }
             KeyBehaviorDecision::Ignore => {
                 debug!("Current key is ignored or not buffered, process normally: {:?}", event);
@@ -582,7 +583,7 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                 HeldKeyDecision::Release => {
                     // Releasing the current key, will always be tapping, because timeout isn't here
                     if let Some(mut held_key) = self.held_buffer.remove_if(|k| k.event.pos == pos) {
-                        let key_action = if keyboard_state_updated {
+                        let key_action = if keyboard_state_updated && !held_key.is_combo_output {
                             self.keymap.borrow_mut().get_action_with_layer_cache(held_key.event)
                         } else {
                             held_key.action
@@ -639,7 +640,7 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
 
                     if trigger_normal && let Some(held_key) = self.held_buffer.remove_if(|k| k.event.pos == pos) {
                         debug!("Cleaning buffered normal key");
-                        let action = if keyboard_state_updated {
+                        let action = if keyboard_state_updated && !held_key.is_combo_output {
                             self.keymap.borrow_mut().get_action_with_layer_cache(held_key.event)
                         } else {
                             held_key.action
@@ -672,7 +673,9 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
         while idx < self.held_buffer.keys.len() {
             let should_refresh = {
                 let key = &self.held_buffer.keys[idx];
-                key.press_time > press_time && matches!(key.state, KeyState::Pressed(_) | KeyState::WaitingCombo)
+                !key.is_combo_output
+                    && key.press_time > press_time
+                    && matches!(key.state, KeyState::Pressed(_) | KeyState::WaitingCombo)
             };
 
             if should_refresh {

@@ -2,7 +2,7 @@ pub mod common;
 
 use embassy_time::Duration;
 use rmk::combo::{Combo, ComboConfig};
-use rmk::config::{BehaviorConfig, CombosConfig, MorsesConfig, OneShotConfig, PositionalConfig};
+use rmk::config::{BehaviorConfig, CombosConfig, Hand, MorsesConfig, OneShotConfig, PositionalConfig};
 use rmk::keyboard::Keyboard;
 use rmk::types::keycode::KeyCode;
 use rmk::types::modifier::ModifierCombination;
@@ -10,7 +10,7 @@ use rmk::{k, mt, osm, th};
 use rmk_types::action::{MorseMode, MorseProfile};
 use rusty_fork::rusty_fork_test;
 
-use crate::common::{KC_LSHIFT, create_test_keyboard_with_config, wrap_keymap};
+use crate::common::{KC_LGUI, KC_LSHIFT, create_test_keyboard_with_config, wrap_keymap};
 
 fn combos_config(timeout: Duration, combos: &[Combo]) -> CombosConfig {
     let mut config = CombosConfig {
@@ -32,6 +32,17 @@ fn create_modtap_enter_combo_keyboard(config: BehaviorConfig) -> Keyboard<'stati
     let behavior_config = BEHAVIOR_CONFIG.init(config);
     static KEY_CONFIG: static_cell::StaticCell<PositionalConfig<1, 4>> = static_cell::StaticCell::new();
     let per_key_config = KEY_CONFIG.init(PositionalConfig::default());
+    Keyboard::new(wrap_keymap(keymap, per_key_config, behavior_config))
+}
+
+fn create_vial_lgui_enter_combo_keyboard(config: BehaviorConfig) -> Keyboard<'static, 1, 4, 1> {
+    let keymap = [[[mt!(D, ModifierCombination::LGUI), k!(M), k!(Comma), k!(N)]]];
+    let hand = [[Hand::Left, Hand::Right, Hand::Right, Hand::Right]];
+
+    static BEHAVIOR_CONFIG: static_cell::StaticCell<BehaviorConfig> = static_cell::StaticCell::new();
+    let behavior_config = BEHAVIOR_CONFIG.init(config);
+    static KEY_CONFIG: static_cell::StaticCell<PositionalConfig<1, 4>> = static_cell::StaticCell::new();
+    let per_key_config = KEY_CONFIG.init(PositionalConfig::new(hand));
     Keyboard::new(wrap_keymap(keymap, per_key_config, behavior_config))
 }
 
@@ -432,6 +443,53 @@ rusty_fork_test! {
                 [KC_LSHIFT, [0; 6]],
                 [KC_LSHIFT, [kc_to_u8!(Enter), 0, 0, 0, 0, 0]],
                 [KC_LSHIFT, [0; 6]],
+                [0, [0; 6]],
+            ]
+        };
+    }
+
+    #[test]
+    fn test_combo_output_preserved_when_buffered_by_home_row_mod() {
+        key_sequence_test! {
+            keyboard: {
+                let behavior_config = BehaviorConfig {
+                    morse: MorsesConfig {
+                        enable_flow_tap: true,
+                        prior_idle_time: Duration::from_millis(160),
+                        default_profile: MorseProfile::new(
+                            Some(true),
+                            Some(MorseMode::PermissiveHold),
+                            Some(240u16),
+                            Some(240u16)
+                        ),
+                        ..Default::default()
+                    },
+                    combo: combos_config(
+                        Duration::from_millis(35),
+                        &[
+                            Combo::new(ComboConfig::new(
+                                [k!(M), k!(Comma)],
+                                k!(Enter),
+                                Some(0),
+                            )),
+                        ],
+                    ),
+                    ..Default::default()
+                };
+                create_vial_lgui_enter_combo_keyboard(behavior_config)
+            },
+            sequence: [
+                [0, 0, true, 200], // Press LGUI_T(KC_D) after flow-tap prior idle expires
+                [0, 1, true, 100], // Press KC_M, first Enter combo key
+                [0, 2, true, 100], // Press KC_COMMA, completing combo before tapping term
+                [0, 2, false, 10],
+                [0, 1, false, 20],
+                [0, 0, false, 20],
+            ],
+            expected_reports: [
+                [KC_LGUI, [0; 6]],
+                [KC_LGUI, [kc_to_u8!(Enter), 0, 0, 0, 0, 0]],
+                [KC_LGUI, [0; 6]],
                 [0, [0; 6]],
             ]
         };

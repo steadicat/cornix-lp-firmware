@@ -118,6 +118,9 @@ pub enum KeyState {
 pub struct HeldKey {
     pub event: KeyboardEvent,
     pub action: KeyAction,
+    /// The action was produced by a combo and should not be re-resolved from
+    /// the physical key position after a held modifier/layer state changes.
+    pub is_combo_output: bool,
     /// Current state of the held key
     pub state: KeyState,
     /// The press time for the key
@@ -137,9 +140,15 @@ impl HeldKey {
         Self {
             event,
             action,
+            is_combo_output: false,
             state,
             press_time,
             timeout_time,
         }
+    }
+
+    pub fn with_combo_output(mut self, is_combo_output: bool) -> Self {
+        self.is_combo_output = is_combo_output;
+        self
     }
 }
