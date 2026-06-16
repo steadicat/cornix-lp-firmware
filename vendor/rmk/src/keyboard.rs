@@ -650,7 +650,10 @@ impl<'a> Keyboard<'a> {
                 }
                 HeldKeyDecision::Normal => {
                     // Check if the normal keys in the buffer should be triggered.
-                    let trigger_normal = matches!(decision_for_current_key, KeyBehaviorDecision::CleanBuffer);
+                    let trigger_normal = matches!(
+                        decision_for_current_key,
+                        KeyBehaviorDecision::CleanBuffer | KeyBehaviorDecision::FlowTap
+                    );
 
                     if trigger_normal && let Some(held_key) = self.held_buffer.remove_if(|k| k.event.pos == pos) {
                         debug!("Cleaning buffered normal key");
