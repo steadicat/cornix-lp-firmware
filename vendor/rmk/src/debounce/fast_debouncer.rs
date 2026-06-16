@@ -32,7 +32,7 @@ impl<const ROW: usize, const COL: usize> DebouncerTrait<ROW, COL> for FastDeboun
         &mut self,
         row_idx: usize,
         col_idx: usize,
-        key_active: bool,
+        pin_state: bool,
         key_state: &KeyState,
     ) -> DebounceState {
         let debouncing = self.debouncing[col_idx][row_idx];
@@ -46,7 +46,7 @@ impl<const ROW: usize, const COL: usize> DebouncerTrait<ROW, COL> for FastDeboun
                 // Still in a debouncing progress
                 DebounceState::InProgress
             }
-        } else if key_state.pressed != key_active {
+        } else if key_state.pressed != pin_state {
             // If current key isn't in debouncing state, and a key change is detected
             // Trigger the key immediately and record current tick
             self.last_ms = Instant::now();

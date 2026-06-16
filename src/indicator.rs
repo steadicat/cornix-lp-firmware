@@ -1,14 +1,11 @@
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::pwm::{self, SequenceConfig, SequencePwm, SingleSequenceMode, SingleSequencer};
-use embassy_time::Timer;
-use rmk::event::{
-    BatteryStatusEvent, CentralConnectedEvent, ChargingStateEvent, ConnectionStatusChangeEvent,
-    ConnectionType, LedIndicatorEvent, PeripheralConnectedEvent, SleepStateEvent,
-};
-use rmk::macros::processor;
-use rmk::types::battery::{BatteryStatus, ChargeState};
-use rmk::types::ble::BleState;
+use embassy_time::{Duration, Timer};
+use rmk::channel::{CONTROLLER_CHANNEL, ControllerSub};
+use rmk::controller::{Controller, PollingController};
+use rmk::event::ControllerEvent;
 
+const STATUS_INTERVAL_MS: u64 = 33;
 const RAIL_SETTLE_MS: u64 = 5;
 
 const BREATH_FRAMES: u32 = 60;
@@ -87,21 +84,10 @@ const BLUE: Grb = Grb {
     blue: LEVEL,
 };
 
-#[processor(
-    subscribe = [
-        BatteryStatusEvent,
-        ChargingStateEvent,
-        ConnectionStatusChangeEvent,
-        LedIndicatorEvent,
-        PeripheralConnectedEvent,
-        CentralConnectedEvent,
-        SleepStateEvent
-    ],
-    poll_interval = 33
-)]
 pub struct CornixIndicator {
     pwm: SequencePwm<'static>,
     power: Output<'static>,
+    sub: ControllerSub,
     side: Side,
     battery: u8,
     charging_line: bool,
@@ -122,6 +108,9 @@ impl CornixIndicator {
         Self {
             pwm,
             power,
+            sub: CONTROLLER_CHANNEL
+                .subscriber()
+                .expect("controller subscriber unavailable"),
             side,
             battery: 100,
             charging_line: false,
@@ -300,92 +289,102 @@ impl CornixIndicator {
     }
 }
 
-impl CornixIndicator {
-    async fn on_battery_status_event(&mut self, event: BatteryStatusEvent) {
-        if let BatteryStatus::Available {
-            charge_state,
-            level,
-        } = *event
-        {
-            if let Some(level) = level {
+impl Controller for CornixIndicator {
+    type Event = ControllerEvent;
+
+    async fn process_event(&mut self, event: Self::Event) {
+        let should_refresh = match event {
+            ControllerEvent::Battery(level) => {
                 let was_full = self.battery >= BATTERY_FULL;
                 self.battery = level;
                 if self.charging() && self.battery >= BATTERY_FULL && !was_full {
                     self.frame = 0;
                 }
+                true
             }
-            self.set_charging_line(matches!(charge_state, ChargeState::Charging));
-        }
-        self.refresh().await;
-    }
+            ControllerEvent::ChargingState(charging) => {
+                self.set_charging_line(charging);
+                true
+            }
+            ControllerEvent::ConnectionType(connection) => {
+                self.host_transport = if connection == 0 {
+                    HostTransport::Usb
+                } else {
+                    HostTransport::Ble
+                };
+                true
+            }
+            ControllerEvent::BleState(profile, state) => {
+                let connected = matches!(state, rmk::ble::BleState::Connected);
+                let advertising = matches!(state, rmk::ble::BleState::Advertising);
+                let newly_connected = connected && !self.ble_connected;
+                let newly_advertising = advertising && !self.ble_advertising;
 
-    async fn on_charging_state_event(&mut self, event: ChargingStateEvent) {
-        self.set_charging_line(event.charging);
-        self.refresh().await;
-    }
+                if newly_connected || newly_advertising || profile != self.ble_profile {
+                    self.frame = 0;
+                }
 
-    async fn on_connection_status_change_event(&mut self, event: ConnectionStatusChangeEvent) {
-        let status = *event;
-        let active = status.decide_active();
-        self.host_transport = if active == Some(ConnectionType::Usb) {
-            HostTransport::Usb
-        } else {
-            HostTransport::Ble
+                self.ble_profile = profile;
+                self.ble_connected = connected;
+                self.ble_advertising = advertising;
+                true
+            }
+            ControllerEvent::KeyboardIndicator(_) => {
+                if self.side == Side::Central
+                    && self.host_transport == HostTransport::Ble
+                    && !self.ble_connected
+                {
+                    self.ble_connected = true;
+                    self.ble_advertising = false;
+                    self.frame = 0;
+                }
+                true
+            }
+            ControllerEvent::SplitPeripheral(_, connected) => {
+                if self.side == Side::Central && connected != self.peer_connected {
+                    self.peer_connected = connected;
+                    self.frame = 0;
+                }
+                true
+            }
+            ControllerEvent::SplitCentral(connected) => {
+                if self.side == Side::Peripheral && connected != self.peer_connected {
+                    self.peer_connected = connected;
+                    self.frame = 0;
+                }
+                true
+            }
+            ControllerEvent::Sleep(sleeping) => {
+                if sleeping != self.sleeping {
+                    self.sleeping = sleeping;
+                    self.frame = 0;
+                }
+                true
+            }
+            ControllerEvent::BleProfile(profile) => {
+                if profile != self.ble_profile {
+                    self.ble_profile = profile;
+                    self.frame = 0;
+                }
+                true
+            }
+            _ => false,
         };
 
-        let connected = matches!(status.ble.state, BleState::Connected);
-        let advertising = matches!(status.ble.state, BleState::Advertising);
-        let newly_connected = connected && !self.ble_connected;
-        let newly_advertising = advertising && !self.ble_advertising;
-
-        if newly_connected || newly_advertising || status.ble.profile != self.ble_profile {
-            self.frame = 0;
+        if should_refresh {
+            self.refresh().await;
         }
-
-        self.ble_profile = status.ble.profile;
-        self.ble_connected = connected;
-        self.ble_advertising = advertising;
-        self.refresh().await;
     }
 
-    async fn on_led_indicator_event(&mut self, _event: LedIndicatorEvent) {
-        if self.side == Side::Central
-            && self.host_transport == HostTransport::Ble
-            && !self.ble_connected
-        {
-            self.ble_connected = true;
-            self.ble_advertising = false;
-            self.frame = 0;
-        }
-        self.refresh().await;
+    async fn next_message(&mut self) -> Self::Event {
+        self.sub.next_message_pure().await
     }
+}
 
-    async fn on_peripheral_connected_event(&mut self, event: PeripheralConnectedEvent) {
-        if self.side == Side::Central && event.connected != self.peer_connected {
-            self.peer_connected = event.connected;
-            self.frame = 0;
-        }
-        self.refresh().await;
-    }
+impl PollingController for CornixIndicator {
+    const INTERVAL: Duration = Duration::from_millis(STATUS_INTERVAL_MS);
 
-    async fn on_central_connected_event(&mut self, event: CentralConnectedEvent) {
-        if self.side == Side::Peripheral && event.connected != self.peer_connected {
-            self.peer_connected = event.connected;
-            self.frame = 0;
-        }
-        self.refresh().await;
-    }
-
-    async fn on_sleep_state_event(&mut self, event: SleepStateEvent) {
-        let sleeping = *event;
-        if sleeping != self.sleeping {
-            self.sleeping = sleeping;
-            self.frame = 0;
-        }
-        self.refresh().await;
-    }
-
-    async fn poll(&mut self) {
+    async fn update(&mut self) {
         self.refresh().await;
         self.frame = self.frame.wrapping_add(1);
     }

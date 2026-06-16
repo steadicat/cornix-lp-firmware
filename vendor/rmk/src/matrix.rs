@@ -1,60 +1,65 @@
 #[cfg(feature = "async_matrix")]
 use core::pin::pin;
+use core::sync::atomic::Ordering;
 
 use embassy_time::Timer;
 use embedded_hal::digital::{InputPin, OutputPin};
-use rmk_macro::input_device;
 #[cfg(feature = "async_matrix")]
 use {embassy_futures::select::select_slice, embedded_hal_async::digital::Wait, heapless::Vec};
 
-use crate::core_traits::Runnable;
+use crate::CONNECTION_STATE;
 use crate::debounce::{DebounceState, DebouncerTrait};
-use crate::event::{KeyboardEvent, publish_event_async};
+use crate::event::{Event, KeyPos, KeyboardEvent, KeyboardEventPos};
 use crate::input_device::InputDevice;
+use crate::state::ConnectionState;
+
 pub mod bidirectional_matrix;
-pub mod direct_pin;
-pub mod hc595_matrix;
 
 /// Recording the matrix pressed state
-#[cfg(feature = "host_security")]
-pub struct MatrixState {
-    // 30 bytes is the limit by Vial and 240 keys is enough for most keyboards
+#[cfg(feature = "vial_lock")]
+pub struct MatrixState<const ROW: usize, const COL: usize> {
+    // 30 bytes is the limited by Vial and 240 keys is enough for
+    // most keyborad
     state: [u8; 30],
-    row: usize,
-    col: usize,
-    row_len: usize,
 }
 
-#[cfg(feature = "host_security")]
-impl MatrixState {
-    pub fn new(row: usize, col: usize) -> Self {
-        let row_len = col.div_ceil(8);
-        assert!(row * row_len <= 30, "Matrix too large for MatrixState");
-        Self {
-            state: [0; 30],
-            row,
-            col,
-            row_len,
-        }
+#[cfg(feature = "vial_lock")]
+impl<const ROW: usize, const COL: usize> Default for MatrixState<ROW, COL> {
+    fn default() -> Self {
+        Self::new()
     }
-    pub fn update(&mut self, event: &KeyboardEvent) {
-        use crate::event::{KeyPos, KeyboardEventPos};
-        if let KeyboardEventPos::Key(KeyPos { row, col }) = event.pos {
-            if row as usize >= self.row || col as usize >= self.col {
+}
+
+#[cfg(feature = "vial_lock")]
+impl<const ROW: usize, const COL: usize> MatrixState<ROW, COL> {
+    const ROW_LEN: usize = (COL + 8) / 8;
+    const OUT_OF_BOUNDARY: () = if ROW * Self::ROW_LEN > 30 {
+        panic!(
+            "Cannot use matrix tester because your keyboard has too many keys. \
+            Consider disable the `matrix_tester` feature"
+        )
+    };
+    pub fn new() -> Self {
+        Self { state: [0; 30] }
+    }
+    pub fn update(&mut self, event: &crate::event::KeyboardEvent) {
+        use crate::event::KeyboardEventPos;
+        if let KeyboardEventPos::Key(crate::event::KeyPos { row, col }) = event.pos {
+            if row as usize >= ROW || col as usize >= COL {
                 warn!("Matrix read out of bounds");
                 return;
             }
             let pressed = event.pressed;
-            let index = row as usize * self.row_len * 8 + col as usize;
+            let index = row as usize * Self::ROW_LEN * 8 + col as usize;
             let byte_index = index / 8;
             let bit_index = index % 8;
             self.state[byte_index] = self.state[byte_index] & !(1 << bit_index) | ((pressed as u8) << bit_index);
         }
     }
     pub fn read_all(&self, target: &mut [u8]) {
-        let slice = &self.state[..(self.row * self.row_len)];
+        let slice = &self.state[..(ROW * Self::ROW_LEN)];
         let mut target_iter = target.iter_mut();
-        for row_bytes in slice.chunks(self.row_len) {
+        for row_bytes in slice.chunks(Self::ROW_LEN) {
             for byte in row_bytes.iter().rev() {
                 if let Some(target_byte) = target_iter.next() {
                     *target_byte = *byte;
@@ -65,11 +70,11 @@ impl MatrixState {
         }
     }
     pub fn read(&self, row: u8, col: u8) -> bool {
-        if row as usize >= self.row || col as usize >= self.col {
+        if row as usize >= ROW || col as usize >= COL {
             warn!("Matrix read out of bounds");
             return false;
         }
-        let index = row as usize * self.row_len * 8 + col as usize;
+        let index = row as usize * Self::ROW_LEN * 8 + col as usize;
         let byte_index = index / 8;
         let bit_index = index % 8;
         self.state[byte_index] & (1 << bit_index) != 0
@@ -80,6 +85,14 @@ impl MatrixState {
 ///
 /// The keyboard matrix is a 2D matrix of keys, the matrix does the scanning and saves the result to each key's `KeyState`.
 pub trait MatrixTrait<const ROW: usize, const COL: usize>: InputDevice {
+    // Wait for USB or BLE really connected
+    async fn wait_for_connected(&self) {
+        while CONNECTION_STATE.load(Ordering::Acquire) == Into::<bool>::into(ConnectionState::Disconnected) {
+            embassy_time::Timer::after_millis(100).await;
+        }
+        info!("Connected, start scanning matrix");
+    }
+
     #[cfg(feature = "async_matrix")]
     async fn wait_for_key(&mut self);
 }
@@ -146,8 +159,6 @@ pub struct Matrix<
     const ROW: usize,
     const COL: usize,
     const COL2ROW: bool,
-    const ROW_OFFSET: usize = 0,
-    const COL_OFFSET: usize = 0,
 > where
     Self: RowPins<COL2ROW>,
     Self: ColPins<COL2ROW>,
@@ -174,9 +185,7 @@ impl<
     D: DebouncerTrait<ROW, COL>,
     const ROW: usize,
     const COL: usize,
-    const ROW_OFFSET: usize,
-    const COL_OFFSET: usize,
-> RowPins<true> for Matrix<In, Out, D, ROW, COL, true, ROW_OFFSET, COL_OFFSET>
+> RowPins<true> for Matrix<In, Out, D, ROW, COL, true>
 {
     type RowPinsType = [In; ROW];
 }
@@ -188,9 +197,7 @@ impl<
     D: DebouncerTrait<ROW, COL>,
     const ROW: usize,
     const COL: usize,
-    const ROW_OFFSET: usize,
-    const COL_OFFSET: usize,
-> RowPins<false> for Matrix<In, Out, D, ROW, COL, false, ROW_OFFSET, COL_OFFSET>
+> RowPins<false> for Matrix<In, Out, D, ROW, COL, false>
 {
     type RowPinsType = [Out; ROW];
 }
@@ -202,9 +209,7 @@ impl<
     D: DebouncerTrait<ROW, COL>,
     const ROW: usize,
     const COL: usize,
-    const ROW_OFFSET: usize,
-    const COL_OFFSET: usize,
-> ColPins<false> for Matrix<In, Out, D, ROW, COL, false, ROW_OFFSET, COL_OFFSET>
+> ColPins<false> for Matrix<In, Out, D, ROW, COL, false>
 {
     type ColPinsType = [In; COL];
 }
@@ -216,9 +221,7 @@ impl<
     D: DebouncerTrait<ROW, COL>,
     const ROW: usize,
     const COL: usize,
-    const ROW_OFFSET: usize,
-    const COL_OFFSET: usize,
-> ColPins<true> for Matrix<In, Out, D, ROW, COL, true, ROW_OFFSET, COL_OFFSET>
+> ColPins<true> for Matrix<In, Out, D, ROW, COL, true>
 {
     type ColPinsType = [Out; COL];
 }
@@ -230,9 +233,7 @@ impl<
     D: DebouncerTrait<ROW, COL>,
     const ROW: usize,
     const COL: usize,
-    const ROW_OFFSET: usize,
-    const COL_OFFSET: usize,
-> MatrixOutputPins<Out> for Matrix<In, Out, D, ROW, COL, true, ROW_OFFSET, COL_OFFSET>
+> MatrixOutputPins<Out> for Matrix<In, Out, D, ROW, COL, true>
 {
     fn get_output_pins(&self) -> &[Out] {
         &self.col_pins
@@ -250,9 +251,7 @@ impl<
     D: DebouncerTrait<ROW, COL>,
     const ROW: usize,
     const COL: usize,
-    const ROW_OFFSET: usize,
-    const COL_OFFSET: usize,
-> MatrixOutputPins<Out> for Matrix<In, Out, D, ROW, COL, false, ROW_OFFSET, COL_OFFSET>
+> MatrixOutputPins<Out> for Matrix<In, Out, D, ROW, COL, false>
 {
     fn get_output_pins(&self) -> &[Out] {
         &self.row_pins
@@ -270,9 +269,7 @@ impl<
     D: DebouncerTrait<ROW, COL>,
     const ROW: usize,
     const COL: usize,
-    const ROW_OFFSET: usize,
-    const COL_OFFSET: usize,
-> MatrixInputPins<In> for Matrix<In, Out, D, ROW, COL, true, ROW_OFFSET, COL_OFFSET>
+> MatrixInputPins<In> for Matrix<In, Out, D, ROW, COL, true>
 {
     fn get_input_pins(&self) -> &[In] {
         &self.row_pins
@@ -300,9 +297,7 @@ impl<
     D: DebouncerTrait<ROW, COL>,
     const ROW: usize,
     const COL: usize,
-    const ROW_OFFSET: usize,
-    const COL_OFFSET: usize,
-> MatrixInputPins<In> for Matrix<In, Out, D, ROW, COL, false, ROW_OFFSET, COL_OFFSET>
+> MatrixInputPins<In> for Matrix<In, Out, D, ROW, COL, false>
 {
     fn get_input_pins(&self) -> &[In] {
         &self.col_pins
@@ -331,9 +326,7 @@ impl<
     const ROW: usize,
     const COL: usize,
     const COL2ROW: bool,
-    const ROW_OFFSET: usize,
-    const COL_OFFSET: usize,
-> Matrix<In, Out, D, ROW, COL, COL2ROW, ROW_OFFSET, COL_OFFSET>
+> Matrix<In, Out, D, ROW, COL, COL2ROW>
 where
     Self: RowPins<COL2ROW>,
     Self: ColPins<COL2ROW>,
@@ -367,18 +360,14 @@ impl<
     const ROW: usize,
     const COL: usize,
     const COL2ROW: bool,
-    const ROW_OFFSET: usize,
-    const COL_OFFSET: usize,
-> InputDevice for Matrix<In, Out, D, ROW, COL, COL2ROW, ROW_OFFSET, COL_OFFSET>
+> InputDevice for Matrix<In, Out, D, ROW, COL, COL2ROW>
 where
     Self: RowPins<COL2ROW>,
     Self: ColPins<COL2ROW>,
     Self: MatrixOutputPins<Out>,
     Self: MatrixInputPins<In>,
 {
-    type Event = KeyboardEvent;
-
-    async fn read_event(&mut self) -> Self::Event {
+    async fn read_event(&mut self) -> crate::event::Event {
         loop {
             let (out_idx_start, in_idx_start) = self.scan_pos;
 
@@ -416,15 +405,11 @@ where
                         {
                             self.rescan_needed = true;
                         }
-                        // Pull it back to low before returning
-                        if let Some(out_pin) = self.get_output_pins_mut().get_mut(out_idx) {
-                            out_pin.set_low().ok();
-                        }
-                        return KeyboardEvent::key(
-                            (row_idx + ROW_OFFSET) as u8,
-                            (col_idx + COL_OFFSET) as u8,
+                        return Event::Key(KeyboardEvent::key(
+                            row_idx as u8,
+                            col_idx as u8,
                             self.key_states[col_idx][row_idx].pressed,
-                        );
+                        ));
                     }
 
                     // If there's key still pressed, always refresh the self.scan_start
@@ -460,34 +445,7 @@ impl<
     const ROW: usize,
     const COL: usize,
     const COL2ROW: bool,
-    const ROW_OFFSET: usize,
-    const COL_OFFSET: usize,
-> Runnable for Matrix<In, Out, D, ROW, COL, COL2ROW, ROW_OFFSET, COL_OFFSET>
-where
-    Self: RowPins<COL2ROW>,
-    Self: ColPins<COL2ROW>,
-    Self: MatrixOutputPins<Out>,
-    Self: MatrixInputPins<In>,
-{
-    async fn run(&mut self) -> ! {
-        loop {
-            let event = self.read_event().await;
-            publish_event_async(event).await;
-        }
-    }
-}
-
-impl<
-    #[cfg(not(feature = "async_matrix"))] In: InputPin,
-    #[cfg(feature = "async_matrix")] In: Wait + InputPin,
-    Out: OutputPin,
-    D: DebouncerTrait<ROW, COL>,
-    const ROW: usize,
-    const COL: usize,
-    const COL2ROW: bool,
-    const ROW_OFFSET: usize,
-    const COL_OFFSET: usize,
-> MatrixTrait<ROW, COL> for Matrix<In, Out, D, ROW, COL, COL2ROW, ROW_OFFSET, COL_OFFSET>
+> MatrixTrait<ROW, COL> for Matrix<In, Out, D, ROW, COL, COL2ROW>
 where
     Self: RowPins<COL2ROW>,
     Self: ColPins<COL2ROW>,
@@ -511,7 +469,32 @@ where
     }
 }
 
-#[input_device(publish = KeyboardEvent)]
+pub struct OffsetMatrixWrapper<
+    const ROW: usize,
+    const COL: usize,
+    M: MatrixTrait<ROW, COL>,
+    const ROW_OFFSET: usize,
+    const COL_OFFSET: usize,
+>(pub M);
+
+impl<const ROW: usize, const COL: usize, M: MatrixTrait<ROW, COL>, const ROW_OFFSET: usize, const COL_OFFSET: usize>
+    InputDevice for OffsetMatrixWrapper<ROW, COL, M, ROW_OFFSET, COL_OFFSET>
+{
+    async fn read_event(&mut self) -> Event {
+        match self.0.read_event().await {
+            Event::Key(KeyboardEvent {
+                pressed,
+                pos: KeyboardEventPos::Key(KeyPos { row, col }),
+            }) => Event::Key(KeyboardEvent::key(
+                row + ROW_OFFSET as u8,
+                col + COL_OFFSET as u8,
+                pressed,
+            )),
+            event => event,
+        }
+    }
+}
+
 pub struct TestMatrix<const ROW: usize, const COL: usize> {
     last: bool,
 }
@@ -525,19 +508,22 @@ impl<const ROW: usize, const COL: usize> TestMatrix<ROW, COL> {
     pub fn new() -> Self {
         Self { last: false }
     }
+}
 
-    async fn read_keyboard_event(&mut self) -> KeyboardEvent {
+impl<const ROW: usize, const COL: usize> MatrixTrait<ROW, COL> for TestMatrix<ROW, COL> {
+    #[cfg(feature = "async_matrix")]
+    async fn wait_for_key(&mut self) {}
+}
+
+impl<const ROW: usize, const COL: usize> InputDevice for TestMatrix<ROW, COL> {
+    async fn read_event(&mut self) -> Event {
         if self.last {
             embassy_time::Timer::after_millis(100).await;
         } else {
             embassy_time::Timer::after_secs(5).await;
         }
         self.last = !self.last;
-        KeyboardEvent::key(0, 0, self.last)
+        // info!("Read event: {:?}", self.last);
+        Event::Key(KeyboardEvent::key(0, 0, self.last))
     }
-}
-
-impl<const ROW: usize, const COL: usize> MatrixTrait<ROW, COL> for TestMatrix<ROW, COL> {
-    #[cfg(feature = "async_matrix")]
-    async fn wait_for_key(&mut self) {}
 }

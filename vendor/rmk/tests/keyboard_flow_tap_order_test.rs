@@ -5,11 +5,12 @@ use rmk::config::{BehaviorConfig, Hand, MorsesConfig, PositionalConfig};
 use rmk::keyboard::Keyboard;
 use rmk::types::modifier::ModifierCombination;
 use rmk::{k, mt};
-use rmk_types::morse::{MorseMode, MorseProfile};
+use rmk_types::action::{MorseMode, MorseProfile};
+use rusty_fork::rusty_fork_test;
 
 use crate::common::wrap_keymap;
 
-fn create_flow_tap_word_order_keyboard() -> Keyboard<'static> {
+fn create_flow_tap_word_order_keyboard() -> Keyboard<'static, 1, 5, 1> {
     let keymap = [[[
         k!(Space),
         mt!(K, ModifierCombination::RGUI),
@@ -40,11 +41,12 @@ fn create_flow_tap_word_order_keyboard() -> Keyboard<'static> {
     };
 
     let behavior_config: &'static mut BehaviorConfig = Box::leak(Box::new(behavior_config));
-    let per_key_config: &'static PositionalConfig<1, 5> =
+    let per_key_config: &'static mut PositionalConfig<1, 5> =
         Box::leak(Box::new(PositionalConfig::new(hand)));
     Keyboard::new(wrap_keymap(keymap, per_key_config, behavior_config))
 }
 
+rusty_fork_test! {
 #[test]
 fn test_flow_tap_word_order_after_idle_start_repro() {
     key_sequence_test! {
@@ -190,4 +192,5 @@ fn test_flow_tap_word_order_when_normal_key_released_before_final_homerow() {
             [0, [0; 6]],
         ]
     };
+}
 }

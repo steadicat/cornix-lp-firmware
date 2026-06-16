@@ -3,13 +3,19 @@
 //! Ported from the Zephyr driver implementation:
 //! https://github.com/zephyrproject-rtos/zephyr/blob/d31c6e95033fd6b3763389edba6a655245ae1328/drivers/input/input_pmw3610.c
 
-use embassy_time::{Duration, Instant, Timer};
-use embedded_hal::digital::{InputPin, OutputPin};
-use embedded_hal_async::digital::Wait;
-use embedded_hal_async::spi::SpiBus;
+use core::cell::RefCell;
 
+use embassy_time::{Duration, Timer};
+use embedded_hal::digital::{InputPin, OutputPin};
+use embedded_hal_async::spi::SpiBus;
+use usbd_hid::descriptor::MouseReport;
+
+use crate::channel::KEYBOARD_REPORT_CHANNEL;
 pub use crate::driver::bitbang_spi::{BitBangError, BitBangSpiBus};
-use crate::input_device::pointing::{InitState, MotionData, PointingDevice, PointingDriver, PointingDriverError};
+use crate::event::{Axis, AxisEvent, AxisValType, Event};
+use crate::hid::Report;
+use crate::input_device::{InputDevice, InputProcessor, ProcessResult};
+use crate::keymap::KeyMap;
 
 // ============================================================================
 // Page 0 registers
@@ -87,28 +93,12 @@ const INIT_OBSERVATION_DELAY_MS: u64 = 10;
 const CLOCK_ON_DELAY_US: u64 = 300;
 
 // SPI timing constants (from PMW3610 datasheet)
-/// NCS to SCLK active;
-/// Delay from last NCS falling edge to 1st SCK rising edge
-const T_NCS_SCLK_NS: u64 = 120;
-/// SPI read address-data delay;
-/// from rising SCLK for last bit of the address byte, to falling SCLK for the 1st bit of data being read.
-const T_SRAD_US: u64 = 4;
-/// SPI time between read and subsequent commands;
-/// from rising SCLK for last bit of the 1st data byte, to falling SCLK for the 1st bit of data being read.
-const T_SRX_NS: u64 = 250;
-/// SPI time between write command;
-/// From rising SCLK for last bit of the first data byte, to rising SCLK for last bit of the second data byte.
-/// It's actually 20 us before read and 30 us before write, but we don't distinguish between write and read commands here, and use the larger of the two.
-const T_SWX_US: u64 = 30;
-/// SCLK to NCS inactive for SDIO write;
-/// From last SCLK falling edge to NCS rising edge, for valid SDIO data transfer
-const T_SCLK_NCS_W_US: u64 = 10;
-/// SCLK to NCS inactive for SDIO read;
-/// From last SCLK falling edge to NCS rising edge, for valid SDIO data transfer
-const T_SCLK_NCS_R_NS: u64 = 120;
-/// NCS inactive after motion burst;
-/// Minimum NCS inactive time after motion burst before next SPI usage
-const T_BEXIT_NS: u64 = 250;
+const T_NCS_SCLK_US: u64 = 1;
+const T_SRAD_US: u64 = 5;
+const T_SRX_US: u64 = 2;
+const T_SWX_US: u64 = 35;
+const T_SCLK_NCS_WR_US: u64 = 20;
+const T_BEXIT_US: u64 = 2;
 
 // Resolution constants
 const RES_STEP: u16 = 200;
@@ -159,20 +149,20 @@ pub enum Pmw3610Error {
     InvalidCpi,
 }
 
-impl From<Pmw3610Error> for PointingDriverError {
-    fn from(err: Pmw3610Error) -> Self {
-        match err {
-            Pmw3610Error::Spi => PointingDriverError::Spi,
-            Pmw3610Error::InvalidProductId(id) => PointingDriverError::InvalidProductId(id),
-            Pmw3610Error::InitFailed => PointingDriverError::InitFailed,
-            Pmw3610Error::InvalidCpi => PointingDriverError::InvalidCpi,
-        }
-    }
+/// Motion data from the sensor
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MotionData {
+    pub dx: i16,
+    pub dy: i16,
 }
 
 /// PMW3610 driver using embedded-hal SPI traits
-pub struct Pmw3610<SPI: SpiBus, CS: OutputPin, MOTION: InputPin + Wait> {
-    id: u8,
+pub struct Pmw3610<SPI, CS, MOTION>
+where
+    SPI: SpiBus,
+    CS: OutputPin,
+    MOTION: InputPin,
+{
     spi: SPI,
     cs: CS,
     motion_gpio: Option<MOTION>,
@@ -180,11 +170,15 @@ pub struct Pmw3610<SPI: SpiBus, CS: OutputPin, MOTION: InputPin + Wait> {
     smart_flag: bool,
 }
 
-impl<SPI: SpiBus, CS: OutputPin, MOTION: InputPin + Wait> Pmw3610<SPI, CS, MOTION> {
+impl<SPI, CS, MOTION> Pmw3610<SPI, CS, MOTION>
+where
+    SPI: SpiBus,
+    CS: OutputPin,
+    MOTION: InputPin,
+{
     /// Create a new PMW3610 driver instance
-    pub fn new(id: u8, spi: SPI, cs: CS, motion_gpio: Option<MOTION>, config: Pmw3610Config) -> Self {
+    pub fn new(spi: SPI, cs: CS, motion_gpio: Option<MOTION>, config: Pmw3610Config) -> Self {
         Self {
-            id,
             spi,
             cs,
             motion_gpio,
@@ -193,26 +187,24 @@ impl<SPI: SpiBus, CS: OutputPin, MOTION: InputPin + Wait> Pmw3610<SPI, CS, MOTIO
         }
     }
 
-    /// Set force awake mode
-    async fn set_force_awake(&mut self, enable: bool) -> Result<(), PointingDriverError> {
-        let mut val = self.read_reg(PMW3610_PERFORMANCE).await?;
-        val &= !PERFORMANCE_FMODE_MASK;
-        if enable {
-            val |= PERFORMANCE_FMODE_FORCE_AWAKE;
-        } else {
-            val |= PERFORMANCE_FMODE_NORMAL;
+    /// Check if motion is pending (motion GPIO is active low)
+    pub fn motion_pending(&mut self) -> bool {
+        match &mut self.motion_gpio {
+            Some(gpio) => gpio.is_low().unwrap_or(true),
+            None => true,
         }
+    }
 
-        self.spi_clk_on().await?;
-        self.write_reg(PMW3610_PERFORMANCE, val).await?;
-        self.spi_clk_off().await?;
-
-        Ok(())
+    #[inline(always)]
+    fn short_delay() {
+        for _ in 0..64 {
+            core::hint::spin_loop();
+        }
     }
 
     async fn read_reg(&mut self, addr: u8) -> Result<u8, Pmw3610Error> {
         let _ = self.cs.set_low();
-        Timer::after(Duration::from_nanos(T_NCS_SCLK_NS)).await;
+        Timer::after(Duration::from_micros(T_NCS_SCLK_US)).await;
 
         self.spi.write(&[addr & 0x7f]).await.map_err(|_| Pmw3610Error::Spi)?;
 
@@ -221,17 +213,17 @@ impl<SPI: SpiBus, CS: OutputPin, MOTION: InputPin + Wait> Pmw3610<SPI, CS, MOTIO
         let mut value = [0u8];
         self.spi.read(&mut value).await.map_err(|_| Pmw3610Error::Spi)?;
 
-        Timer::after(Duration::from_nanos(T_SCLK_NCS_R_NS)).await;
+        Self::short_delay();
         let _ = self.cs.set_high();
 
-        Timer::after(Duration::from_nanos(T_SRX_NS)).await;
+        Timer::after(Duration::from_micros(T_SRX_US)).await;
 
         Ok(value[0])
     }
 
     async fn read_burst(&mut self, addr: u8, data: &mut [u8]) -> Result<(), Pmw3610Error> {
         let _ = self.cs.set_low();
-        Timer::after(Duration::from_nanos(T_NCS_SCLK_NS)).await;
+        Timer::after(Duration::from_micros(T_NCS_SCLK_US)).await;
 
         self.spi.write(&[addr & 0x7f]).await.map_err(|_| Pmw3610Error::Spi)?;
 
@@ -239,24 +231,24 @@ impl<SPI: SpiBus, CS: OutputPin, MOTION: InputPin + Wait> Pmw3610<SPI, CS, MOTIO
 
         self.spi.read(data).await.map_err(|_| Pmw3610Error::Spi)?;
 
-        Timer::after(Duration::from_nanos(T_SCLK_NCS_R_NS)).await;
+        Self::short_delay();
         let _ = self.cs.set_high();
 
-        Timer::after(Duration::from_nanos(T_BEXIT_NS)).await;
+        Timer::after(Duration::from_micros(T_BEXIT_US)).await;
 
         Ok(())
     }
 
     async fn write_reg(&mut self, addr: u8, value: u8) -> Result<(), Pmw3610Error> {
         let _ = self.cs.set_low();
-        Timer::after(Duration::from_nanos(T_NCS_SCLK_NS)).await;
+        Timer::after(Duration::from_micros(T_NCS_SCLK_US)).await;
 
         self.spi
             .write(&[addr | SPI_WRITE, value])
             .await
             .map_err(|_| Pmw3610Error::Spi)?;
 
-        Timer::after(Duration::from_micros(T_SCLK_NCS_W_US)).await;
+        Timer::after(Duration::from_micros(T_SCLK_NCS_WR_US)).await;
         let _ = self.cs.set_high();
 
         Timer::after(Duration::from_micros(T_SWX_US)).await;
@@ -272,6 +264,46 @@ impl<SPI: SpiBus, CS: OutputPin, MOTION: InputPin + Wait> Pmw3610<SPI, CS, MOTIO
 
     async fn spi_clk_off(&mut self) -> Result<(), Pmw3610Error> {
         self.write_reg(PMW3610_SPI_CLK_ON_REQ, SPI_CLOCK_ON_REQ_OFF).await
+    }
+
+    /// Set sensor resolution in CPI (200-3200, step 200)
+    pub async fn set_resolution(&mut self, cpi: u16) -> Result<(), Pmw3610Error> {
+        if !(RES_MIN..=RES_MAX).contains(&cpi) {
+            return Err(Pmw3610Error::InvalidCpi);
+        }
+
+        self.spi_clk_on().await?;
+
+        self.write_reg(PMW3610_SPI_PAGE0, SPI_PAGE0_1).await?;
+
+        let mut val = self.read_reg(PMW3610_RES_STEP).await?;
+        val &= !RES_STEP_RES_MASK;
+        val |= (cpi / RES_STEP) as u8;
+
+        self.write_reg(PMW3610_RES_STEP, val).await?;
+        self.write_reg(PMW3610_SPI_PAGE1, SPI_PAGE1_0).await?;
+
+        self.spi_clk_off().await?;
+
+        debug!("PMW3610: Resolution set to {} CPI", cpi);
+        Ok(())
+    }
+
+    /// Set force awake mode
+    pub async fn force_awake(&mut self, enable: bool) -> Result<(), Pmw3610Error> {
+        let mut val = self.read_reg(PMW3610_PERFORMANCE).await?;
+        val &= !PERFORMANCE_FMODE_MASK;
+        if enable {
+            val |= PERFORMANCE_FMODE_FORCE_AWAKE;
+        } else {
+            val |= PERFORMANCE_FMODE_NORMAL;
+        }
+
+        self.spi_clk_on().await?;
+        self.write_reg(PMW3610_PERFORMANCE, val).await?;
+        self.spi_clk_off().await?;
+
+        Ok(())
     }
 
     async fn configure(&mut self) -> Result<(), Pmw3610Error> {
@@ -333,48 +365,25 @@ impl<SPI: SpiBus, CS: OutputPin, MOTION: InputPin + Wait> Pmw3610<SPI, CS, MOTIO
         self.spi_clk_off().await?;
 
         if self.config.res_cpi > 0 {
-            self.set_resolution(self.config.res_cpi as u16)
-                .await
-                .map_err(|_| Pmw3610Error::Spi)?;
+            self.set_resolution(self.config.res_cpi as u16).await?;
         }
 
-        self.set_force_awake(self.config.force_awake)
-            .await
-            .map_err(|_| Pmw3610Error::Spi)?;
+        self.force_awake(self.config.force_awake).await?;
 
         info!("PMW3610 initialized successfully");
         Ok(())
     }
 
-    fn sign_extend(value: u16, bits: usize) -> i16 {
-        let sign_bit = 1 << bits;
-        if value & sign_bit != 0 {
-            (value | !((1 << (bits + 1)) - 1)) as i16
-        } else {
-            value as i16
-        }
-    }
-}
-
-impl<SPI, CS, MOTION> PointingDriver for Pmw3610<SPI, CS, MOTION>
-where
-    SPI: SpiBus,
-    CS: OutputPin,
-    MOTION: InputPin + Wait,
-{
-    type MOTION = MOTION;
-
     /// Initialize the sensor (public API)
-    async fn init(&mut self) -> Result<(), PointingDriverError> {
+    pub async fn init(&mut self) -> Result<(), Pmw3610Error> {
         let _ = self.cs.set_high();
         Timer::after(Duration::from_millis(1)).await;
 
-        self.configure().await?;
-        Ok(())
+        self.configure().await
     }
 
     /// Read motion data from the sensor
-    async fn read_motion(&mut self) -> Result<MotionData, PointingDriverError> {
+    pub async fn read_motion(&mut self) -> Result<MotionData, Pmw3610Error> {
         let burst_data_len = if self.config.smart_mode {
             BURST_DATA_LEN_SMART
         } else {
@@ -400,16 +409,12 @@ where
 
             if self.smart_flag && shutter_val < SHUTTER_SMART_THRESHOLD {
                 self.spi_clk_on().await?;
-                self.write_reg(PMW3610_SMART_MODE, SMART_MODE_ENABLE)
-                    .await
-                    .map_err(|_| PointingDriverError::Spi)?;
+                self.write_reg(PMW3610_SMART_MODE, SMART_MODE_ENABLE).await?;
                 self.spi_clk_off().await?;
                 self.smart_flag = false;
             } else if !self.smart_flag && shutter_val > SHUTTER_SMART_THRESHOLD {
                 self.spi_clk_on().await?;
-                self.write_reg(PMW3610_SMART_MODE, SMART_MODE_DISABLE)
-                    .await
-                    .map_err(|_| PointingDriverError::Spi)?;
+                self.write_reg(PMW3610_SMART_MODE, SMART_MODE_DISABLE).await?;
                 self.spi_clk_off().await?;
                 self.smart_flag = true;
             }
@@ -418,129 +423,211 @@ where
         Ok(MotionData { dx, dy })
     }
 
-    /// Check if motion is pending (motion GPIO is active low)
-    fn motion_pending(&mut self) -> bool {
-        match &mut self.motion_gpio {
-            Some(gpio) => gpio.is_low().unwrap_or(true),
-            None => true,
+    fn sign_extend(value: u16, bits: usize) -> i16 {
+        let sign_bit = 1 << bits;
+        if value & sign_bit != 0 {
+            (value | !((1 << (bits + 1)) - 1)) as i16
+        } else {
+            value as i16
         }
-    }
-
-    fn motion_gpio(&mut self) -> Option<&mut MOTION> {
-        self.motion_gpio.as_mut()
-    }
-
-    /// Set sensor resolution in CPI (200-3200, step 200)
-    async fn set_resolution(&mut self, cpi: u16) -> Result<(), PointingDriverError> {
-        if !(RES_MIN..=RES_MAX).contains(&cpi) {
-            return Err(PointingDriverError::InvalidCpi);
-        }
-
-        self.spi_clk_on().await?;
-
-        self.write_reg(PMW3610_SPI_PAGE0, SPI_PAGE0_1).await?;
-
-        let mut val = self.read_reg(PMW3610_RES_STEP).await?;
-        val &= !RES_STEP_RES_MASK;
-        val |= (cpi / RES_STEP) as u8;
-
-        self.write_reg(PMW3610_RES_STEP, val).await?;
-        self.write_reg(PMW3610_SPI_PAGE1, SPI_PAGE1_0).await?;
-
-        self.spi_clk_off().await?;
-
-        debug!("PMW3610: Resolution set to {} CPI", cpi);
-        Ok(())
     }
 }
 
-impl<SPI, CS, MOTION> PointingDevice<Pmw3610<SPI, CS, MOTION>>
+/// Initialization state for the device
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InitState {
+    Pending,
+    Initializing(u8),
+    Ready,
+    Failed,
+}
+
+/// PMW3610 as an InputDevice for RMK
+///
+/// This device returns `Event::Joystick` events with relative X/Y movement.
+pub struct Pmw3610Device<SPI, CS, MOTION>
 where
     SPI: SpiBus,
     CS: OutputPin,
-    MOTION: InputPin + Wait,
+    MOTION: InputPin,
 {
-    const DEFAULT_POLL_INTERVAL_US: u64 = 500;
-    const DEFAULT_REPORT_HZ: u16 = 125;
+    sensor: Pmw3610<SPI, CS, MOTION>,
+    init_state: InitState,
+    poll_interval: Duration,
+}
 
-    /// Create a new PMW3610 device
-    pub fn new(id: u8, spi: SPI, cs: CS, motion_gpio: Option<MOTION>, sensor_config: Pmw3610Config) -> Self {
-        Self::with_poll_interval_and_report_hz(
-            id,
-            spi,
-            cs,
-            motion_gpio,
-            sensor_config,
-            Self::DEFAULT_POLL_INTERVAL_US,
-            Self::DEFAULT_REPORT_HZ,
-        )
-    }
+impl<SPI, CS, MOTION> Pmw3610Device<SPI, CS, MOTION>
+where
+    SPI: SpiBus,
+    CS: OutputPin,
+    MOTION: InputPin,
+{
+    const MAX_INIT_RETRIES: u8 = 3;
 
-    /// Create a new PMW3610 device with custom report rate (Hz)
-    pub fn with_report_hz(
-        id: u8,
-        spi: SPI,
-        cs: CS,
-        motion_gpio: Option<MOTION>,
-        sensor_config: Pmw3610Config,
-        report_hz: u16,
-    ) -> Self {
-        Self::with_poll_interval_and_report_hz(
-            id,
-            spi,
-            cs,
-            motion_gpio,
-            sensor_config,
-            Self::DEFAULT_POLL_INTERVAL_US,
-            report_hz,
-        )
+    /// Create a new PMW3610 device for RMK
+    pub fn new(spi: SPI, cs: CS, motion_gpio: Option<MOTION>, config: Pmw3610Config) -> Self {
+        Self {
+            sensor: Pmw3610::new(spi, cs, motion_gpio, config),
+            init_state: InitState::Pending,
+            poll_interval: Duration::from_micros(500),
+        }
     }
 
     /// Create a new PMW3610 device with custom poll interval
     pub fn with_poll_interval(
-        id: u8,
         spi: SPI,
         cs: CS,
         motion_gpio: Option<MOTION>,
-        sensor_config: Pmw3610Config,
+        config: Pmw3610Config,
         poll_interval_us: u64,
     ) -> Self {
-        Self::with_poll_interval_and_report_hz(
-            id,
-            spi,
-            cs,
-            motion_gpio,
-            sensor_config,
-            poll_interval_us,
-            Self::DEFAULT_REPORT_HZ,
-        )
+        Self {
+            sensor: Pmw3610::new(spi, cs, motion_gpio, config),
+            init_state: InitState::Pending,
+            poll_interval: Duration::from_micros(poll_interval_us),
+        }
     }
 
-    /// Create a new PMW3610 device with custom poll interval and report rate
-    pub fn with_poll_interval_and_report_hz(
-        id: u8,
-        spi: SPI,
-        cs: CS,
-        motion_gpio: Option<MOTION>,
-        sensor_config: Pmw3610Config,
-        poll_interval_us: u64,
-        report_hz: u16,
-    ) -> Self {
-        let report_interval = Duration::from_hz(report_hz as u64);
-
-        // Polling should be more frequent than reporting
-        let poll_interval = Duration::from_micros(poll_interval_us).min(report_interval);
-
-        Self {
-            id,
-            sensor: Pmw3610::new(id, spi, cs, motion_gpio, sensor_config),
-            init_state: InitState::Pending,
-            poll_interval,
-            report_interval,
-            last_poll: Instant::MIN,
-            last_report: Instant::MIN,
-            accumulated_x: 0,
-            accumulated_y: 0,
+    async fn try_init(&mut self) -> bool {
+        match self.init_state {
+            InitState::Ready => return true,
+            InitState::Failed => return false,
+            InitState::Pending => {
+                self.init_state = InitState::Initializing(0);
+            }
+            InitState::Initializing(_) => {}
         }
+
+        if let InitState::Initializing(retry_count) = self.init_state {
+            info!("PMW3610: Initializing sensor (attempt {})", retry_count + 1);
+
+            match self.sensor.init().await {
+                Ok(()) => {
+                    info!("PMW3610: Sensor initialized successfully");
+                    self.init_state = InitState::Ready;
+                    return true;
+                }
+                Err(_e) => {
+                    error!("PMW3610: Init failed: {:?}", _e);
+                    if retry_count + 1 >= Self::MAX_INIT_RETRIES {
+                        error!("PMW3610: Max retries reached, giving up");
+                        self.init_state = InitState::Failed;
+                        return false;
+                    }
+                    self.init_state = InitState::Initializing(retry_count + 1);
+                    Timer::after(Duration::from_millis(100)).await;
+                    return false;
+                }
+            }
+        }
+
+        false
+    }
+}
+
+impl<SPI, CS, MOTION> InputDevice for Pmw3610Device<SPI, CS, MOTION>
+where
+    SPI: SpiBus,
+    CS: OutputPin,
+    MOTION: InputPin,
+{
+    async fn read_event(&mut self) -> Event {
+        loop {
+            Timer::after(self.poll_interval).await;
+
+            if self.init_state != InitState::Ready && !self.try_init().await {
+                continue;
+            }
+
+            if !self.sensor.motion_pending() {
+                continue;
+            }
+
+            match self.sensor.read_motion().await {
+                Ok(motion) => {
+                    if motion.dx != 0 || motion.dy != 0 {
+                        return Event::Joystick([
+                            AxisEvent {
+                                typ: AxisValType::Rel,
+                                axis: Axis::X,
+                                value: motion.dx,
+                            },
+                            AxisEvent {
+                                typ: AxisValType::Rel,
+                                axis: Axis::Y,
+                                value: motion.dy,
+                            },
+                            AxisEvent {
+                                typ: AxisValType::Rel,
+                                axis: Axis::Z,
+                                value: 0,
+                            },
+                        ]);
+                    }
+                }
+                Err(_e) => {
+                    warn!("PMW3610 read error");
+                }
+            }
+        }
+    }
+}
+
+/// PMW3610 Processor that converts motion events to mouse reports
+pub struct Pmw3610Processor<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize> {
+    /// Reference to the keymap
+    keymap: &'a RefCell<KeyMap<'a, ROW, COL, NUM_LAYER, NUM_ENCODER>>,
+}
+
+impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize>
+    Pmw3610Processor<'a, ROW, COL, NUM_LAYER, NUM_ENCODER>
+{
+    /// Create a new PMW3610 processor with default settings
+    pub fn new(keymap: &'a RefCell<KeyMap<'a, ROW, COL, NUM_LAYER, NUM_ENCODER>>) -> Self {
+        Self { keymap }
+    }
+
+    async fn generate_report(&self, x: i16, y: i16) {
+        let mouse_report = MouseReport {
+            buttons: 0,
+            x: x.clamp(i8::MIN as i16, i8::MAX as i16) as i8,
+            y: y.clamp(i8::MIN as i16, i8::MAX as i16) as i8,
+            wheel: 0,
+            pan: 0,
+        };
+        self.send_report(Report::MouseReport(mouse_report)).await;
+    }
+}
+
+impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize>
+    InputProcessor<'a, ROW, COL, NUM_LAYER, NUM_ENCODER> for Pmw3610Processor<'a, ROW, COL, NUM_LAYER, NUM_ENCODER>
+{
+    async fn process(&mut self, event: Event) -> ProcessResult {
+        match event {
+            Event::Joystick(axis_events) => {
+                let mut x = 0i16;
+                let mut y = 0i16;
+
+                for axis_event in axis_events.iter() {
+                    match axis_event.axis {
+                        Axis::X => x = axis_event.value,
+                        Axis::Y => y = axis_event.value,
+                        _ => {}
+                    }
+                }
+
+                self.generate_report(x, y).await;
+                ProcessResult::Stop
+            }
+            _ => ProcessResult::Continue(event),
+        }
+    }
+
+    async fn send_report(&self, report: Report) {
+        KEYBOARD_REPORT_CHANNEL.send(report).await;
+    }
+
+    fn get_keymap(&self) -> &RefCell<KeyMap<'a, ROW, COL, NUM_LAYER, NUM_ENCODER>> {
+        self.keymap
     }
 }

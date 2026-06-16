@@ -1,49 +1,29 @@
 pub mod morse;
-pub mod test_block_on;
 pub mod test_macro;
 
+use core::cell::RefCell;
+
+use embassy_futures::block_on;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use futures::join;
 use log::debug;
-use rmk::channel::USB_REPORT_CHANNEL;
+use rmk::channel::{KEY_EVENT_CHANNEL, KEYBOARD_REPORT_CHANNEL};
 use rmk::config::{BehaviorConfig, PositionalConfig};
-use rmk::core_traits::Runnable;
-use rmk::event::{AsyncEventPublisher, AsyncPublishableEvent, KeyboardEvent};
-use rmk::hid::{KeyboardReport, Report};
+use rmk::descriptor::KeyboardReport;
+use rmk::event::KeyboardEvent;
+use rmk::hid::Report;
+use rmk::input_device::Runnable;
 use rmk::keyboard::Keyboard;
 use rmk::keymap::KeyMap;
-use rmk::state::set_usb_state;
 use rmk::types::action::KeyAction;
-use rmk::types::connection::UsbState;
 use rmk::types::modifier::ModifierCombination;
-use rmk::{KeymapData, a, k, layer, lt, mo, shifted, th, wm};
-
-// `embassy-time`'s MockDriver is a process-global singleton, so running the
-// suite under plain `cargo test` lets tests race on it and hang at the 60 s
-// virtual-time kill switch in `test_block_on`. Abort at test-binary startup
-// with a pointer to the right runner instead of making the user wait for that
-// timeout.
-#[ctor::ctor(unsafe)]
-fn require_nextest() {
-    if std::env::var_os("NEXTEST").is_none() {
-        eprintln!(
-            "\nrmk tests must run under cargo-nextest (embassy-time's MockDriver \
-             is a process-global singleton and needs per-test process isolation).\n\
-             \n  cargo install cargo-nextest --locked\n\n\
-             Then from rmk/:\n\n  \
-             cargo nextest run --no-default-features \
-             --features=split,vial,storage,async_matrix,_ble\n\n\
-             Or for the full feature matrix: `sh scripts/test_all.sh` from the repo root.\n"
-        );
-        std::process::exit(1);
-    }
-}
+use rmk::{a, k, layer, lt, mo, shifted, th, wm};
 
 // Init logger for tests
-#[ctor::ctor(unsafe)]
+#[ctor::ctor]
 pub fn init_log() {
     let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Debug)
@@ -65,20 +45,16 @@ pub struct TestKeyPress {
 }
 
 // run a keyboard, test input is seq of key input with delay, use expected report to verify
-pub async fn run_key_sequence_test<'a>(
-    keyboard: &mut Keyboard<'a>,
+pub async fn run_key_sequence_test<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize>(
+    keyboard: &mut Keyboard<'a, ROW, COL, NUM_LAYER>,
     key_sequence: &[TestKeyPress],
     expected_reports: &[KeyboardReport],
 ) {
     static REPORTS_DONE: Mutex<CriticalSectionRawMutex, bool> = Mutex::new(false);
     static SEQ_SEND_DONE: Mutex<CriticalSectionRawMutex, bool> = Mutex::new(false);
 
-    let sender = KeyboardEvent::publisher_async();
-    sender.clear();
-    USB_REPORT_CHANNEL.clear();
-    // Default `preferred = Usb` + Configured usb makes the cascade pick Usb,
-    // routing reports to `USB_REPORT_CHANNEL` for assertions below.
-    set_usb_state(UsbState::Configured);
+    KEY_EVENT_CHANNEL.clear();
+    KEYBOARD_REPORT_CHANNEL.clear();
     static MAX_TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
     join!(
@@ -103,8 +79,8 @@ pub async fn run_key_sequence_test<'a>(
         async {
             for key in key_sequence {
                 Timer::after(Duration::from_millis(key.delay)).await;
-                sender
-                    .publish_async(KeyboardEvent::key(key.row, key.col, key.pressed))
+                KEY_EVENT_CHANNEL
+                    .send(KeyboardEvent::key(key.row, key.col, key.pressed))
                     .await;
             }
 
@@ -116,7 +92,7 @@ pub async fn run_key_sequence_test<'a>(
             match select(Timer::after(MAX_TEST_TIMEOUT), async {
                 let mut report_index = -1;
                 for expected in expected_reports {
-                    match select(Timer::after(Duration::from_secs(2)), USB_REPORT_CHANNEL.receive()).await {
+                    match select(Timer::after(Duration::from_secs(2)), KEYBOARD_REPORT_CHANNEL.receive()).await {
                         Either::First(_) => panic!("ERROR: report wait timeout reached"),
                         Either::Second(Report::KeyboardReport(report)) => {
                             report_index += 1;
@@ -173,23 +149,27 @@ pub const fn get_keymap() -> [[[KeyAction; 14]; 5]; 2] {
     ]
 }
 
-pub fn create_test_keyboard_with_config(config: BehaviorConfig) -> Keyboard<'static> {
-    let behavior_config: &'static mut BehaviorConfig = Box::leak(Box::new(config));
-    let per_key_config: &'static PositionalConfig<5, 14> = Box::leak(Box::new(PositionalConfig::default()));
+pub fn create_test_keyboard_with_config(config: BehaviorConfig) -> Keyboard<'static, 5, 14, 2> {
+    static BEHAVIOR_CONFIG: static_cell::StaticCell<BehaviorConfig> = static_cell::StaticCell::new();
+    let behavior_config: &'static mut BehaviorConfig = BEHAVIOR_CONFIG.init(config);
+    static KEY_CONFIG: static_cell::StaticCell<PositionalConfig<5, 14>> = static_cell::StaticCell::new();
+    let per_key_config = KEY_CONFIG.init(PositionalConfig::default());
     Keyboard::new(wrap_keymap(get_keymap(), per_key_config, behavior_config))
 }
 
 pub fn wrap_keymap<'a, const R: usize, const C: usize, const L: usize>(
     keymap: [[[KeyAction; C]; R]; L],
-    per_key_config: &'static PositionalConfig<R, C>,
+    per_key_config: &'static mut PositionalConfig<R, C>,
     config: &'static mut BehaviorConfig,
-) -> &'a KeyMap<'static> {
+) -> &'a mut RefCell<KeyMap<'static, R, C, L>> {
     // Box::leak is acceptable in tests
-    let data = Box::leak(Box::new(KeymapData::new(keymap)));
-    let keymap = test_block_on::test_block_on(KeyMap::new(data, config, per_key_config));
-    Box::leak(Box::new(keymap))
+    let leaked_keymap = Box::leak(Box::new(keymap));
+
+    let keymap = block_on(KeyMap::new(leaked_keymap, None, config, per_key_config));
+    let keymap_cell = RefCell::new(keymap);
+    Box::leak(Box::new(keymap_cell))
 }
 
-pub fn create_test_keyboard() -> Keyboard<'static> {
+pub fn create_test_keyboard() -> Keyboard<'static, 5, 14, 2> {
     create_test_keyboard_with_config(BehaviorConfig::default())
 }

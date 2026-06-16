@@ -1,5 +1,7 @@
 //! Manage BLE profiles and bonding information
 
+use core::sync::atomic::Ordering;
+
 #[cfg(feature = "_ble")]
 use bt_hci::{cmd::le::LeSetPhy, controller::ControllerCmdAsync};
 use embassy_futures::select::{Either3, select3};
@@ -7,15 +9,24 @@ use embassy_sync::signal::Signal;
 use trouble_host::prelude::*;
 use trouble_host::{BondInformation, LongTermKey};
 #[cfg(feature = "storage")]
-use {crate::channel::FLASH_CHANNEL, crate::storage::FLASH_OPERATION_FINISHED};
+use {
+    crate::channel::FLASH_CHANNEL,
+    crate::storage::{FLASH_OPERATION_FINISHED, FlashOperationMessage},
+};
+#[cfg(feature = "controller")]
+use {
+    crate::channel::{CONTROLLER_CHANNEL, ControllerPub, send_controller_event},
+    crate::event::ControllerEvent,
+};
 
 use super::ble_server::CCCD_TABLE_SIZE;
 use crate::NUM_BLE_PROFILE;
+use crate::ble::ACTIVE_PROFILE;
 use crate::channel::BLE_PROFILE_CHANNEL;
-use crate::state::{current_profile, set_ble_profile};
+use crate::state::CONNECTION_TYPE;
 
 pub(crate) static UPDATED_PROFILE: Signal<crate::RawMutex, ProfileInfo> = Signal::new();
-pub(crate) static UPDATED_CCCD_TABLE: Signal<crate::RawMutex, heapless::Vec<u8, CCCD_TABLE_SIZE>> = Signal::new();
+pub(crate) static UPDATED_CCCD_TABLE: Signal<crate::RawMutex, CccdTable<CCCD_TABLE_SIZE>> = Signal::new();
 
 /// BLE profile info
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -23,10 +34,90 @@ pub(crate) static UPDATED_CCCD_TABLE: Signal<crate::RawMutex, heapless::Vec<u8, 
 pub struct ProfileInfo {
     pub(crate) slot_num: u8,
     pub(crate) removed: bool,
+    #[serde(with = "bond_info_serde")]
     pub(crate) info: BondInformation,
-    /// Raw bytes of the trouble-host `ClientAttTable` for this peer.
-    /// Reconstructed via `ClientAttTableView::try_from_raw` when applied to the stack.
-    pub(crate) cccd_table: heapless::Vec<u8, CCCD_TABLE_SIZE>,
+    #[serde(with = "cccd_table_serde")]
+    pub(crate) cccd_table: CccdTable<CCCD_TABLE_SIZE>,
+}
+
+// Custom serde module for BondInformation
+mod bond_info_serde {
+    use serde::{Deserializer, Serialize, Serializer};
+
+    use super::*;
+
+    pub fn serialize<S>(info: &BondInformation, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let tuple = (
+            info.ltk.to_le_bytes(),
+            info.identity.bd_addr.into_inner(),
+            info.identity.irk.map(|k| k.to_le_bytes()),
+            match info.security_level {
+                SecurityLevel::NoEncryption => 0u8,
+                SecurityLevel::Encrypted => 1u8,
+                SecurityLevel::EncryptedAuthenticated => 2u8,
+            },
+            info.is_bonded,
+        );
+        tuple.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<BondInformation, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let (ltk, bd_addr, irk, security_level, is_bonded): ([u8; 16], [u8; 6], Option<[u8; 16]>, u8, bool) =
+            serde::Deserialize::deserialize(deserializer)?;
+
+        Ok(BondInformation::new(
+            Identity {
+                bd_addr: BdAddr::new(bd_addr),
+                irk: irk.map(IdentityResolvingKey::from_le_bytes),
+            },
+            LongTermKey::from_le_bytes(ltk),
+            match security_level {
+                0 => SecurityLevel::NoEncryption,
+                1 => SecurityLevel::Encrypted,
+                _ => SecurityLevel::EncryptedAuthenticated,
+            },
+            is_bonded,
+        ))
+    }
+}
+
+// Custom serde module for CccdTable
+mod cccd_table_serde {
+    use serde::{Deserializer, Serialize, Serializer};
+
+    use super::*;
+
+    pub fn serialize<S>(table: &CccdTable<CCCD_TABLE_SIZE>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut entries = [(0u16, 0u16); CCCD_TABLE_SIZE];
+        let inner = table.inner();
+        for i in 0..CCCD_TABLE_SIZE {
+            if let Some(entry) = inner.get(i) {
+                entries[i] = (entry.0, entry.1.raw());
+            }
+        }
+        entries.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<CccdTable<CCCD_TABLE_SIZE>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let entries: [(u16, u16); CCCD_TABLE_SIZE] = serde::Deserialize::deserialize(deserializer)?;
+        let mut cccd_values = [(0u16, CCCD::default()); CCCD_TABLE_SIZE];
+        for i in 0..CCCD_TABLE_SIZE {
+            cccd_values[i] = (entries[i].0, entries[i].1.into());
+        }
+        Ok(CccdTable::new(cccd_values))
+    }
 }
 
 /// Returns the maximum number of bytes required to encode T.
@@ -58,24 +149,25 @@ impl Default for ProfileInfo {
             removed: false,
             info: BondInformation::new(
                 Identity {
-                    addr: Address::default(),
+                    bd_addr: BdAddr::default(),
                     irk: None,
                 },
                 LongTermKey(0),
                 SecurityLevel::NoEncryption,
                 false,
             ),
-            cccd_table: heapless::Vec::new(),
+            cccd_table: CccdTable::<CCCD_TABLE_SIZE>::default(),
         }
     }
 }
 
 /// BLE profile switch action
 pub(crate) enum BleProfileAction {
-    Switch(u8),
-    Previous,
-    Next,
-    ClearBond,
+    SwitchProfile(u8),
+    PreviousProfile,
+    NextProfile,
+    ClearProfile,
+    ToggleConnection,
 }
 
 /// Manage BLE profiles and bonding information
@@ -86,37 +178,46 @@ pub(crate) enum BleProfileAction {
 /// 3. Updating the bonding information of the active profile to the BLE stack
 /// 4. Handling profile switch, clear, and save operations
 #[cfg(feature = "_ble")]
-pub(crate) struct ProfileManager<'b, 's, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool>
-where
-    's: 'b,
-{
+pub struct ProfileManager<'a, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> {
     /// List of bonded devices
     bonded_devices: heapless::Vec<ProfileInfo, NUM_BLE_PROFILE>,
     /// BLE stack
-    stack: &'b Stack<'s, C, P>,
+    stack: &'a Stack<'a, C, P>,
+    /// Publisher for controller channel
+    #[cfg(feature = "controller")]
+    controller_pub: ControllerPub,
 }
 
 #[cfg(feature = "_ble")]
-impl<'b, 's, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> ProfileManager<'b, 's, C, P>
-where
-    's: 'b,
-{
+impl<'a, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> ProfileManager<'a, C, P> {
     /// Create a new profile manager
-    pub(crate) fn new(stack: &'b Stack<'s, C, P>) -> Self {
+    pub fn new(stack: &'a Stack<'a, C, P>) -> Self {
         Self {
             bonded_devices: heapless::Vec::new(),
             stack,
+            #[cfg(feature = "controller")]
+            controller_pub: unwrap!(CONTROLLER_CHANNEL.publisher()),
         }
     }
 
     /// Load stored bonding information
     #[cfg(feature = "storage")]
-    pub(crate) async fn load_bonded_devices(&mut self) {
-        use crate::storage::{read_active_ble_profile, read_bond_info};
+    pub async fn load_bonded_devices<
+        F: embedded_storage_async::nor_flash::NorFlash,
+        const ROW: usize,
+        const COL: usize,
+        const NUM_LAYER: usize,
+        const NUM_ENCODER: usize,
+    >(
+        &mut self,
+        storage: &mut crate::storage::Storage<F, ROW, COL, NUM_LAYER, NUM_ENCODER>,
+    ) {
+        use crate::read_storage;
+        use crate::storage::{StorageData, StorageKeys};
 
         self.bonded_devices.clear();
         for slot_num in 0..NUM_BLE_PROFILE {
-            if let Some(info) = read_bond_info(slot_num as u8).await
+            if let Ok(Some(info)) = storage.read_trouble_bond_info(slot_num as u8).await
                 && !info.removed
                 && let Err(e) = self.bonded_devices.push(info)
             {
@@ -125,20 +226,31 @@ where
         }
         debug!("Loaded {} bond info", self.bonded_devices.len());
 
-        let profile = if let Some(profile) = read_active_ble_profile().await {
+        let mut buf: [u8; 128] = [0; 128];
+
+        // Load current active profile, save to `ACTIVE_PROFILE`
+        if let Ok(Some(StorageData::ActiveBleProfile(profile))) =
+            read_storage!(storage, &(StorageKeys::ActiveBleProfile as u32), buf)
+        {
             debug!("Loaded active profile: {}", profile);
-            profile
+            ACTIVE_PROFILE.store(profile, Ordering::SeqCst);
+
+            #[cfg(feature = "controller")]
+            send_controller_event(&mut self.controller_pub, ControllerEvent::BleProfile(profile));
         } else {
+            // If no saved active profile, use 0 as default
             debug!("Loaded default active profile",);
-            0
+            ACTIVE_PROFILE.store(0, Ordering::SeqCst);
+
+            #[cfg(feature = "controller")]
+            send_controller_event(&mut self.controller_pub, ControllerEvent::BleProfile(0));
         };
-        set_ble_profile(profile);
     }
 
-    /// Cached bond info for the currently active profile, cloned to free the
-    /// caller from borrow conflicts with concurrent `update_profile()`.
+    /// Cached bond info for the currently active profile, cloned to avoid
+    /// borrow conflicts with concurrent profile updates.
     pub(crate) fn active_bond_info(&self) -> Option<ProfileInfo> {
-        let active_profile = current_profile();
+        let active_profile = ACTIVE_PROFILE.load(Ordering::SeqCst);
         self.bonded_devices
             .iter()
             .find(|bond_info| !bond_info.removed && bond_info.slot_num == active_profile)
@@ -146,26 +258,32 @@ where
     }
 
     /// Update bonding information in the stack according to the current active profile
-    pub(crate) fn update_stack_bonds(&self) {
-        let identities: heapless::Vec<Identity, NUM_BLE_PROFILE> = self
-            .stack
-            .with_bond_information(|bonds| bonds.iter().map(|b| b.identity).collect());
-        for identity in identities {
-            if let Err(e) = self.stack.remove_bond_information(identity) {
+    pub fn update_stack_bonds(&self) {
+        let active_profile = ACTIVE_PROFILE.load(core::sync::atomic::Ordering::SeqCst);
+
+        // Remove current bonding information in the stack
+        let current_bond_info = self.stack.get_bond_information();
+        for bond in current_bond_info {
+            if let Err(e) = self.stack.remove_bond_information(bond.identity) {
                 debug!("Remove bond info error: {:?}", e);
             }
         }
 
-        if let Some(info) = self.active_bond_info() {
-            debug!("Add bond info of profile {}: {:?}", info.slot_num, info);
-            if let Err(e) = self.stack.add_bond_information(info.info) {
+        // Add bonding information for the active profile
+        if let Some(info) = self
+            .bonded_devices
+            .iter()
+            .find(|bond_info| !bond_info.removed && bond_info.slot_num == active_profile)
+        {
+            debug!("Add bond info of profile {}: {:?}", active_profile, info);
+            if let Err(e) = self.stack.add_bond_information(info.info.clone()) {
                 debug!("Add bond info error: {:?}", e);
             }
         }
     }
 
     /// Add/update bonding information
-    pub(crate) async fn add_profile_info(&mut self, profile_info: ProfileInfo) {
+    pub async fn add_profile_info(&mut self, profile_info: ProfileInfo) {
         // Update profile information in memory
         if let Some(index) = self
             .bonded_devices
@@ -195,9 +313,9 @@ where
     }
 
     /// Update CCCD table in the stack
-    pub(crate) async fn update_profile_cccd_table(&mut self, table: heapless::Vec<u8, CCCD_TABLE_SIZE>) {
+    pub async fn update_profile_cccd_table(&mut self, table: CccdTable<CCCD_TABLE_SIZE>) {
         // Get current active profile
-        let active_profile = current_profile();
+        let active_profile = ACTIVE_PROFILE.load(Ordering::SeqCst);
 
         // Update profile information in memory
         if let Some(index) = self
@@ -205,19 +323,26 @@ where
             .iter()
             .position(|info| info.slot_num == active_profile)
         {
-            if self.bonded_devices[index].cccd_table == table {
-                debug!("Skip updating same CCCD table");
+            // Check whether the CCCD table is the same as the current one
+            debug!(
+                "Updating profile {} CCCD table: {:?} from {:?}",
+                active_profile,
+                table,
+                self.bonded_devices[index].cccd_table.inner()
+            );
+            if self.bonded_devices[index].cccd_table.inner() == table.inner() {
+                info!("Skip updating same CCCD table");
                 return;
             }
 
             debug!("Updating profile {} CCCD table: {:?}", active_profile, table);
-            self.bonded_devices[index].cccd_table = table;
+            let mut profile_info = self.bonded_devices[index].clone();
+            profile_info.cccd_table = table;
+            self.bonded_devices[index] = profile_info.clone();
 
             #[cfg(feature = "storage")]
             FLASH_CHANNEL
-                .send(crate::storage::FlashOperationMessage::ProfileInfo(
-                    self.bonded_devices[index].clone(),
-                ))
+                .send(crate::storage::FlashOperationMessage::ProfileInfo(profile_info))
                 .await;
         } else {
             error!("Failed to update profile CCCD table: profile not found");
@@ -225,7 +350,7 @@ where
     }
 
     /// Clear bonding information of the specified slot
-    pub(crate) async fn clear_bond(&mut self, slot_num: u8) {
+    pub async fn clear_bond(&mut self, slot_num: u8) {
         info!("Clearing bonding information on profile: {}", slot_num);
 
         // Update bonding information in memory
@@ -246,13 +371,13 @@ where
     }
 
     /// Switch to the specified profile, return true if the profile is switched
-    pub(crate) async fn switch_profile(&mut self, profile: u8) -> bool {
-        let current = current_profile();
+    pub async fn switch_profile(&mut self, profile: u8) -> bool {
+        let current = ACTIVE_PROFILE.load(core::sync::atomic::Ordering::SeqCst);
         if profile == current {
             return false;
         }
 
-        set_ble_profile(profile);
+        ACTIVE_PROFILE.store(profile, core::sync::atomic::Ordering::SeqCst);
 
         // Update the active bonding information in the stack
         self.update_stack_bonds();
@@ -264,6 +389,9 @@ where
 
         info!("Switched to BLE profile: {}", profile);
 
+        #[cfg(feature = "controller")]
+        send_controller_event(&mut self.controller_pub, ControllerEvent::BleProfile(profile));
+
         true
     }
 
@@ -272,7 +400,7 @@ where
     /// This function will wait for profile switch operation, then update the active profile
     /// based on the operation type. After completing the operation, it will wait for a period
     /// to ensure the flash operation is completed.
-    pub(crate) async fn update_profile(&mut self) {
+    pub async fn update_profile(&mut self) {
         // Wait for profile switch or updated profile event
         loop {
             match select3(
@@ -284,32 +412,44 @@ where
             {
                 Either3::First(action) => {
                     #[cfg(feature = "storage")]
-                    FLASH_OPERATION_FINISHED.reset();
+                    if FLASH_OPERATION_FINISHED.signaled() {
+                        FLASH_OPERATION_FINISHED.reset();
+                    }
                     match action {
-                        BleProfileAction::Switch(profile) => {
+                        BleProfileAction::SwitchProfile(profile) => {
                             if !self.switch_profile(profile).await {
                                 // If the profile is the same as the current profile, do nothing
                                 continue;
                             }
                         }
-                        BleProfileAction::Previous => {
-                            let mut profile = current_profile();
-                            profile = if profile == 0 {
-                                NUM_BLE_PROFILE as u8 - 1
-                            } else {
-                                profile - 1
-                            };
+                        BleProfileAction::PreviousProfile => {
+                            let mut profile = ACTIVE_PROFILE.load(Ordering::SeqCst);
+                            profile = if profile == 0 { 7 } else { profile - 1 };
 
                             self.switch_profile(profile).await;
                         }
-                        BleProfileAction::Next => {
-                            let mut profile = current_profile() + 1;
+                        BleProfileAction::NextProfile => {
+                            let mut profile = ACTIVE_PROFILE.load(Ordering::SeqCst) + 1;
                             profile %= NUM_BLE_PROFILE as u8;
 
                             self.switch_profile(profile).await;
                         }
-                        BleProfileAction::ClearBond => {
-                            self.clear_bond(current_profile()).await;
+                        BleProfileAction::ClearProfile => {
+                            let profile = ACTIVE_PROFILE.load(Ordering::SeqCst);
+                            self.clear_bond(profile).await;
+                        }
+                        BleProfileAction::ToggleConnection => {
+                            let current = CONNECTION_TYPE.load(Ordering::SeqCst);
+                            let updated = 1 - current;
+                            CONNECTION_TYPE.store(updated, Ordering::SeqCst);
+
+                            info!("Switching connection type to: {}", updated);
+
+                            #[cfg(feature = "controller")]
+                            send_controller_event(&mut self.controller_pub, ControllerEvent::ConnectionType(updated));
+
+                            #[cfg(feature = "storage")]
+                            FLASH_CHANNEL.send(FlashOperationMessage::ConnectionType(updated)).await;
                         }
                     }
                     #[cfg(feature = "storage")]

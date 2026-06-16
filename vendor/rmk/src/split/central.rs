@@ -17,10 +17,8 @@ use {
 /// * `id` - peripheral id
 /// * `addr` - (optional) peripheral's BLE static address. This argument is enabled only for nRF BLE split now
 /// * `receiver` - (optional) serial port. This argument is enabled only for serial split now
-#[allow(clippy::extra_unused_lifetimes)]
 pub async fn run_peripheral_manager<
-    'b,
-    's,
+    'a,
     const ROW: usize,
     const COL: usize,
     const ROW_OFFSET: usize,
@@ -33,11 +31,9 @@ pub async fn run_peripheral_manager<
 >(
     id: usize,
     #[cfg(feature = "_ble")] addr: &RefCell<VecView<Option<[u8; 6]>>>,
-    #[cfg(feature = "_ble")] stack: &'b Stack<'s, C, DefaultPacketPool>,
+    #[cfg(feature = "_ble")] stack: &'a Stack<'a, C, DefaultPacketPool>,
     #[cfg(not(feature = "_ble"))] receiver: S,
-) where
-    's: 'b,
-{
+) {
     #[cfg(feature = "_ble")]
     {
         use crate::split::ble::central::run_ble_peripheral_manager;

@@ -5,22 +5,15 @@ use embedded_hal::digital::InputPin;
 #[cfg(feature = "async_matrix")]
 use embedded_hal_async::digital::Wait;
 use postcard::experimental::max_size::MaxSize;
-use rmk_macro::input_device;
 use serde::{Deserialize, Serialize};
 
-use crate::event::KeyboardEvent;
+use super::InputDevice;
+use crate::event::{Event, KeyboardEvent};
 
 /// Holds current/old state and both [`InputPin`](https://docs.rs/embedded-hal/latest/embedded_hal/digital/trait.InputPin.html)
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[input_device(publish = KeyboardEvent)]
-pub struct RotaryEncoder<
-    #[cfg(feature = "async_matrix")] A: InputPin + Wait,
-    #[cfg(not(feature = "async_matrix"))] A: InputPin,
-    #[cfg(feature = "async_matrix")] B: InputPin + Wait,
-    #[cfg(not(feature = "async_matrix"))] B: InputPin,
-    P: Phase,
-> {
+pub struct RotaryEncoder<A, B, P> {
     pin_a: A,
     pin_b: B,
     state: u8,
@@ -30,12 +23,6 @@ pub struct RotaryEncoder<
     /// The last action of the rotary encoder.
     /// When it's not `None`, the rotary encoder needs to emit a release event.
     last_action: Option<Direction>,
-    /// Timestamp of the last emitted direction event, used for debounce.
-    last_event_time: Option<embassy_time::Instant>,
-    /// Minimum interval in milliseconds between emitted direction events.
-    /// Contact bounce on mechanical encoders produces spurious quadrature edges;
-    /// this suppresses them without altering the Phase/Resolution logic.
-    debounce_ms: u16,
 }
 
 /// The encoder direction is either `Clockwise`, `CounterClockwise`, or `None`
@@ -140,12 +127,10 @@ impl Phase for ResolutionPhase {
     }
 }
 
-impl<
-    #[cfg(feature = "async_matrix")] A: InputPin + Wait,
-    #[cfg(not(feature = "async_matrix"))] A: InputPin,
-    #[cfg(feature = "async_matrix")] B: InputPin + Wait,
-    #[cfg(not(feature = "async_matrix"))] B: InputPin,
-> RotaryEncoder<A, B, DefaultPhase>
+impl<A, B> RotaryEncoder<A, B, DefaultPhase>
+where
+    A: InputPin,
+    B: InputPin,
 {
     /// Accepts two [`InputPin`](https://docs.rs/embedded-hal/latest/embedded_hal/digital/trait.InputPin.html)s, these will be read on every `update()`.
     pub fn new(pin_a: A, pin_b: B, id: u8) -> Self {
@@ -156,19 +141,15 @@ impl<
             phase: DefaultPhase,
             id,
             last_action: None,
-            last_event_time: None,
-            debounce_ms: 0,
         }
     }
 }
 
 /// Create a resolution-based rotary encoder
-impl<
-    #[cfg(feature = "async_matrix")] A: InputPin + Wait,
-    #[cfg(not(feature = "async_matrix"))] A: InputPin,
-    #[cfg(feature = "async_matrix")] B: InputPin + Wait,
-    #[cfg(not(feature = "async_matrix"))] B: InputPin,
-> RotaryEncoder<A, B, ResolutionPhase>
+impl<A, B> RotaryEncoder<A, B, ResolutionPhase>
+where
+    A: InputPin,
+    B: InputPin,
 {
     /// Creates a new encoder with the specified resolution
     pub fn with_resolution(pin_a: A, pin_b: B, resolution: u8, reverse: bool, id: u8) -> Self {
@@ -179,20 +160,11 @@ impl<
             phase: ResolutionPhase::new(resolution, reverse),
             id,
             last_action: None,
-            last_event_time: None,
-            debounce_ms: 0,
         }
     }
 }
 
-impl<
-    #[cfg(feature = "async_matrix")] A: InputPin + Wait,
-    #[cfg(not(feature = "async_matrix"))] A: InputPin,
-    #[cfg(feature = "async_matrix")] B: InputPin + Wait,
-    #[cfg(not(feature = "async_matrix"))] B: InputPin,
-    P: Phase,
-> RotaryEncoder<A, B, P>
-{
+impl<A: InputPin, B: InputPin, P: Phase> RotaryEncoder<A, B, P> {
     /// Accepts two [`InputPin`](https://docs.rs/embedded-hal/latest/embedded_hal/digital/trait.InputPin.html)s, these will be read on every `update()`, while using `phase` to determine the direction.
     pub fn with_phase(pin_a: A, pin_b: B, phase: P, id: u8) -> Self {
         Self {
@@ -202,16 +174,7 @@ impl<
             phase,
             id,
             last_action: None,
-            last_event_time: None,
-            debounce_ms: 0,
         }
-    }
-
-    /// Set the debounce interval in milliseconds. Events arriving faster than
-    /// this interval after the last emitted event are suppressed.
-    pub fn with_debounce(mut self, debounce_ms: u16) -> Self {
-        self.debounce_ms = debounce_ms;
-        self
     }
 
     /// Call `update` to evaluate the next state of the encoder, propagates errors from `InputPin` read
@@ -259,22 +222,6 @@ impl<
     pub fn into_inner(self) -> (A, B) {
         (self.pin_a, self.pin_b)
     }
-
-    /// Check whether enough time has elapsed since the last emitted event.
-    /// Returns `true` if the event should pass through (first event, or
-    /// debounce interval exceeded). Updates the internal timestamp when
-    /// returning `true`.
-    fn debounce_check(&mut self) -> bool {
-        let now = embassy_time::Instant::now();
-        let ok = match self.last_event_time {
-            Some(last) => now.duration_since(last).as_millis() >= self.debounce_ms as u64,
-            None => true,
-        };
-        if ok {
-            self.last_event_time = Some(now);
-        }
-        ok
-    }
 }
 
 impl<
@@ -283,16 +230,15 @@ impl<
     #[cfg(feature = "async_matrix")] B: InputPin + Wait,
     #[cfg(not(feature = "async_matrix"))] B: InputPin,
     P: Phase,
-> RotaryEncoder<A, B, P>
+> InputDevice for RotaryEncoder<A, B, P>
 {
-    /// Read a keyboard event from the rotary encoder.
-    /// This method is called by the generated InputDevice implementation.
-    async fn read_keyboard_event(&mut self) -> KeyboardEvent {
+    async fn read_event(&mut self) -> Event {
         // Read until a valid rotary encoder event is detected
         if let Some(last_action) = self.last_action {
             embassy_time::Timer::after_millis(5).await;
+            let e = Event::Key(KeyboardEvent::rotary_encoder(self.id, last_action, false));
             self.last_action = None;
-            return KeyboardEvent::rotary_encoder(self.id, last_action, false);
+            return e;
         }
 
         loop {
@@ -304,9 +250,9 @@ impl<
 
             let direction = self.update();
 
-            if direction != Direction::None && self.debounce_check() {
+            if direction != Direction::None {
                 self.last_action = Some(direction);
-                return KeyboardEvent::rotary_encoder(self.id, direction, true);
+                return Event::Key(KeyboardEvent::rotary_encoder(self.id, direction, true));
             }
 
             #[cfg(not(feature = "async_matrix"))]
@@ -323,7 +269,7 @@ mod test {
     use super::*;
     // Init logger for tests
 
-    #[ctor::ctor(unsafe)]
+    #[ctor::ctor]
     fn init_log() {
         let _ = env_logger::builder()
             .filter_level(log::LevelFilter::Debug)

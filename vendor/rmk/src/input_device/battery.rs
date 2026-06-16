@@ -1,36 +1,32 @@
-#[cfg(feature = "_ble")]
-use core::cell::Cell;
+use core::cell::RefCell;
 
-#[cfg(feature = "_ble")]
-use embassy_sync::blocking_mutex::Mutex;
+use embassy_sync::signal::Signal;
 use embedded_hal::digital::InputPin;
-use rmk_macro::{input_device, processor};
-#[cfg(feature = "_ble")]
-use rmk_types::battery::{BatteryStatus, ChargeState};
+#[cfg(all(feature = "_ble", feature = "controller"))]
+use {crate::channel::send_controller_event, crate::event::ControllerEvent};
 
-#[cfg(feature = "_ble")]
-use crate::RawMutex;
-#[cfg(feature = "_ble")]
-use crate::event::BatteryStatusEvent;
-use crate::event::{BatteryAdcEvent, ChargingStateEvent, publish_event};
+use super::{InputDevice, InputProcessor};
+use crate::KeyMap;
+#[cfg(feature = "controller")]
+use crate::channel::{CONTROLLER_CHANNEL, ControllerPub};
+use crate::event::Event;
+use crate::input_device::ProcessResult;
 
-/// Cached battery status, updated by [`BatteryProcessor::commit`] alongside every
-/// [`BatteryStatusEvent`] publish so host services can read the current value
-/// synchronously without subscribing to the event stream.
-#[cfg(feature = "_ble")]
-pub(crate) static BATTERY_STATUS: Mutex<RawMutex, Cell<BatteryStatus>> =
-    Mutex::new(Cell::new(BatteryStatus::Unavailable));
+pub(crate) static BATTERY_UPDATE: Signal<crate::RawMutex, BatteryState> = Signal::new();
 
-#[cfg(feature = "_ble")]
-pub(crate) fn current_battery_status() -> BatteryStatus {
-    BATTERY_STATUS.lock(|c| c.get())
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum BatteryState {
+    // The battery state is not available
+    NotAvailable,
+    // The value range is 0~100
+    Normal(u8),
+    // Charging
+    Charging,
+    // Charging completed, ideally the battery level after charging completed is 100
+    Charged,
 }
 
-/// Reads charging state from a GPIO pin and publishes ChargingStateEvent.
-///
-/// This input device monitors a charging state pin and publishes events when
-/// the charging state changes.
-#[input_device(publish = ChargingStateEvent)]
 pub struct ChargingStateReader<I: InputPin> {
     // Charging state pin or standby pin
     state_input: I,
@@ -51,75 +47,63 @@ impl<I: InputPin> ChargingStateReader<I> {
             first_read: false,
         }
     }
+}
 
-    /// Read the charging state and return an event.
-    /// This method waits until there's a state change to report.
-    async fn read_charging_state_event(&mut self) -> ChargingStateEvent {
+impl<I: InputPin> InputDevice for ChargingStateReader<I> {
+    async fn read_event(&mut self) -> Event {
         // For the first read, don't check whether the charging state is changed
         if !self.first_read {
             // Wait 2s before reading the first value
             embassy_time::Timer::after_secs(2).await;
-            let charging_state = if self.low_active {
-                self.state_input.is_low().unwrap_or(false)
-            } else {
-                self.state_input.is_high().unwrap_or(false)
-            };
+            let charging_state = self.state_input.is_low().unwrap_or(false);
             self.current_charging_state = charging_state;
             self.first_read = true;
-            return ChargingStateEvent {
-                charging: charging_state,
-            };
+            return Event::ChargingState(charging_state);
         }
 
         loop {
-            // Check charging state every 5 seconds
-            embassy_time::Timer::after_secs(5).await;
-
             // Detect charging state
-            let charging_state = if self.low_active {
-                self.state_input.is_low().unwrap_or(false)
-            } else {
-                self.state_input.is_high().unwrap_or(false)
-            };
+            let charging_state = self.state_input.is_low().unwrap_or(false);
 
-            // Only return event when charging state changes
+            // Only send event when charging state changes
             if charging_state != self.current_charging_state {
                 self.current_charging_state = charging_state;
-                return ChargingStateEvent {
-                    charging: charging_state,
-                };
+                return Event::ChargingState(charging_state);
             }
+
+            // Check charging state every 5 seconds
+            embassy_time::Timer::after_secs(5).await;
         }
     }
 }
 
-/// BatteryProcessor processes battery adc value and charging state,
-/// emits `BatteryStatusEvent` when battery status changes.
-#[processor(subscribe = [BatteryAdcEvent, ChargingStateEvent])]
-pub struct BatteryProcessor {
+pub struct BatteryProcessor<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize> {
+    keymap: &'a RefCell<KeyMap<'a, ROW, COL, NUM_LAYER, NUM_ENCODER>>,
     adc_divider_measured: u32,
     adc_divider_total: u32,
-    /// Current battery status
-    battery_status: BatteryStatus,
+    /// Current battery state
+    battery_state: BatteryState,
+    /// Publisher for controller channel
+    #[cfg(feature = "controller")]
+    controller_pub: ControllerPub,
 }
 
-impl BatteryProcessor {
-    pub fn new(adc_divider_measured: u32, adc_divider_total: u32) -> Self {
+impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize>
+    BatteryProcessor<'a, ROW, COL, NUM_LAYER, NUM_ENCODER>
+{
+    pub fn new(
+        adc_divider_measured: u32,
+        adc_divider_total: u32,
+        keymap: &'a RefCell<KeyMap<'a, ROW, COL, NUM_LAYER, NUM_ENCODER>>,
+    ) -> Self {
         BatteryProcessor {
+            keymap,
             adc_divider_measured,
             adc_divider_total,
-            battery_status: BatteryStatus::Unavailable,
+            battery_state: BatteryState::NotAvailable,
+            #[cfg(feature = "controller")]
+            controller_pub: unwrap!(CONTROLLER_CHANNEL.publisher()),
         }
-    }
-
-    /// Apply a new battery status: persist on the processor, mirror into
-    /// [`BATTERY_STATUS`] for synchronous readers, and broadcast via
-    /// [`BatteryStatusEvent`].
-    #[cfg(feature = "_ble")]
-    fn commit(&mut self, status: BatteryStatus) {
-        self.battery_status = status;
-        BATTERY_STATUS.lock(|c| c.set(status));
-        publish_event(BatteryStatusEvent::from(status));
     }
 
     #[cfg(feature = "_ble")]
@@ -159,64 +143,57 @@ impl BatteryProcessor {
     }
 }
 
-impl BatteryProcessor {
-    async fn on_battery_adc_event(&mut self, event: BatteryAdcEvent) {
-        let val = event.0;
-        trace!("Detected battery ADC value: {:?}", val);
+impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_ENCODER: usize>
+    InputProcessor<'a, ROW, COL, NUM_LAYER, NUM_ENCODER> for BatteryProcessor<'a, ROW, COL, NUM_LAYER, NUM_ENCODER>
+{
+    async fn process(&mut self, event: Event) -> ProcessResult {
+        match event {
+            Event::Battery(val) => {
+                trace!("Detected battery ADC value: {:?}", val);
 
-        #[cfg(feature = "_ble")]
-        match self.battery_status {
-            // Skip ADC updates while charging
-            BatteryStatus::Available {
-                charge_state: ChargeState::Charging,
-                ..
-            } => {}
-            // Not charging: publish if the percentage changed.
-            BatteryStatus::Available { charge_state, level } => {
-                let battery_percent = self.get_battery_percent(val);
-                if level != Some(battery_percent) {
-                    self.commit(BatteryStatus::Available {
-                        charge_state,
-                        level: Some(battery_percent),
-                    });
+                #[cfg(feature = "_ble")]
+                {
+                    if matches!(self.battery_state, BatteryState::Normal(_) | BatteryState::NotAvailable) {
+                        let battery_percent = self.get_battery_percent(val);
+
+                        #[cfg(feature = "controller")]
+                        send_controller_event(&mut self.controller_pub, ControllerEvent::Battery(battery_percent));
+
+                        // Update the battery state
+                        if self.battery_state != BatteryState::Normal(battery_percent) {
+                            self.battery_state = BatteryState::Normal(battery_percent);
+                            // Send signal
+                            BATTERY_UPDATE.signal(self.battery_state);
+                        }
+                    }
                 }
+                ProcessResult::Stop
             }
-            // First ADC reading: transition from Unavailable.
-            BatteryStatus::Unavailable => {
-                let battery_percent = self.get_battery_percent(val);
-                self.commit(BatteryStatus::Available {
-                    charge_state: ChargeState::Unknown,
-                    level: Some(battery_percent),
-                });
+            Event::ChargingState(charging) => {
+                info!("Charging state changed: {:?}", charging);
+
+                #[cfg(feature = "_ble")]
+                {
+                    #[cfg(feature = "controller")]
+                    send_controller_event(&mut self.controller_pub, ControllerEvent::ChargingState(charging));
+
+                    if charging {
+                        self.battery_state = BatteryState::Charging;
+                    } else {
+                        // When discharging, the battery state is changed to not available
+                        // Then wait for the `Event::Battery` to update the battery level to real value
+                        self.battery_state = BatteryState::NotAvailable;
+                    }
+                }
+
+                ProcessResult::Stop
             }
+            _ => ProcessResult::Continue(event),
         }
     }
 
-    async fn on_charging_state_event(&mut self, event: ChargingStateEvent) {
-        let charging = event.charging;
-        info!("Charging state changed: {:?}", charging);
-
-        #[cfg(feature = "_ble")]
-        {
-            let status = if charging {
-                // Keep current level when charging
-                let level = match self.battery_status {
-                    BatteryStatus::Available { level, .. } => level,
-                    BatteryStatus::Unavailable => None,
-                };
-                BatteryStatus::Available {
-                    charge_state: ChargeState::Charging,
-                    level,
-                }
-            } else {
-                // When unplugged, mark the level unknown and mark status as discharging
-                BatteryStatus::Available {
-                    charge_state: ChargeState::Discharging,
-                    level: None,
-                }
-            };
-
-            self.commit(status);
-        }
+    /// Get the current keymap
+    fn get_keymap(&self) -> &RefCell<KeyMap<'a, ROW, COL, NUM_LAYER, NUM_ENCODER>> {
+        self.keymap
     }
 }
