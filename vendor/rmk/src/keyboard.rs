@@ -1151,6 +1151,27 @@ impl<'a> Keyboard<'a> {
                 .combo_prior_idle_time()
                 .is_some_and(|idle_time| self.last_press_time.elapsed() < idle_time);
 
+        // A tap-hold press that is not itself a combo component should not
+        // interrupt a pending combo candidate. It may resolve as a held modifier,
+        // and the next key can still complete the combo within the combo term.
+        if event.pressed && key_action.is_morse() {
+            let pending_combo = self
+                .held_buffer
+                .keys
+                .iter()
+                .any(|k| k.state == KeyState::WaitingCombo);
+            let tap_hold_is_combo_component = self.keymap.with_combos(|combos| {
+                combos.iter().filter_map(|c| c.as_ref()).any(|combo| {
+                    combo.config.layer.map_or(true, |layer| layer == current_layer)
+                        && combo.config.contains(key_action)
+                })
+            });
+
+            if pending_combo && !tap_hold_is_combo_component {
+                return (Some(*key_action), false);
+            }
+        }
+
         let max_size_of_updated_combo = if skip_combo {
             None
         } else {

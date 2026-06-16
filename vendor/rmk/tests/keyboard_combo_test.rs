@@ -13,6 +13,8 @@ use rmk_types::morse::{MorseMode, MorseProfile};
 
 use crate::common::{KC_LGUI, KC_LSHIFT, create_test_keyboard_with_config, wrap_keymap};
 
+const KC_RGUI: u8 = 1 << 7;
+
 // Get tested combo config
 pub fn get_combos_config() -> CombosConfig {
     combos_config(
@@ -106,6 +108,16 @@ fn create_vial_lgui_enter_combo_keyboard(config: BehaviorConfig) -> Keyboard<'st
 
     let behavior_config: &'static mut BehaviorConfig = Box::leak(Box::new(config));
     let per_key_config: &'static PositionalConfig<1, 4> =
+        Box::leak(Box::new(PositionalConfig::new(hand)));
+    Keyboard::new(wrap_keymap(keymap, per_key_config, behavior_config))
+}
+
+fn create_vial_rgui_tab_combo_keyboard(config: BehaviorConfig) -> Keyboard<'static> {
+    let keymap = [[[k!(C), k!(V), mt!(K, ModifierCombination::RGUI)]]];
+    let hand = [[Hand::Left, Hand::Left, Hand::Right]];
+
+    let behavior_config: &'static mut BehaviorConfig = Box::leak(Box::new(config));
+    let per_key_config: &'static PositionalConfig<1, 3> =
         Box::leak(Box::new(PositionalConfig::new(hand)));
     Keyboard::new(wrap_keymap(keymap, per_key_config, behavior_config))
 }
@@ -648,6 +660,100 @@ fn test_combo_output_preserved_when_buffered_by_home_row_mod() {
             [KC_LGUI, [0; 6]],
             [KC_LGUI, [kc_to_u8!(Enter), 0, 0, 0, 0, 0]],
             [KC_LGUI, [0; 6]],
+            [0, [0; 6]],
+        ]
+    };
+}
+
+#[test]
+fn test_vial_tab_combo_survives_interleaved_command_home_row_mod_press() {
+    key_sequence_test! {
+        keyboard: {
+            let behavior_config = BehaviorConfig {
+                morse: MorsesConfig {
+                    enable_flow_tap: true,
+                    prior_idle_time: Duration::from_millis(160),
+                    default_profile: MorseProfile::new(
+                        Some(true),
+                        Some(MorseMode::PermissiveHold),
+                        Some(240u16),
+                        Some(240u16)
+                    ),
+                    ..Default::default()
+                },
+                combo: combos_config(
+                    Duration::from_millis(35),
+                    &[
+                        Combo::new(ComboConfig::new(
+                            [k!(C), k!(V)].to_vec(),
+                            k!(Tab),
+                            Some(0),
+                        )),
+                    ],
+                ),
+                ..Default::default()
+            };
+            create_vial_rgui_tab_combo_keyboard(behavior_config)
+        },
+        sequence: [
+            [0, 0, true, 200],  // First tab-combo component
+            [0, 2, true, 10],   // Command HRM lands between combo components
+            [0, 1, true, 10],   // Second tab-combo component, still inside 35 ms
+            [0, 1, false, 10],
+            [0, 0, false, 10],
+            [0, 2, false, 20],
+        ],
+        expected_reports: [
+            [KC_RGUI, [0; 6]],
+            [KC_RGUI, [kc_to_u8!(Tab), 0, 0, 0, 0, 0]],
+            [KC_RGUI, [0; 6]],
+            [0, [0; 6]],
+        ]
+    };
+}
+
+#[test]
+fn test_vial_tab_combo_survives_interleaved_command_home_row_mod_press_reversed() {
+    key_sequence_test! {
+        keyboard: {
+            let behavior_config = BehaviorConfig {
+                morse: MorsesConfig {
+                    enable_flow_tap: true,
+                    prior_idle_time: Duration::from_millis(160),
+                    default_profile: MorseProfile::new(
+                        Some(true),
+                        Some(MorseMode::PermissiveHold),
+                        Some(240u16),
+                        Some(240u16)
+                    ),
+                    ..Default::default()
+                },
+                combo: combos_config(
+                    Duration::from_millis(35),
+                    &[
+                        Combo::new(ComboConfig::new(
+                            [k!(C), k!(V)].to_vec(),
+                            k!(Tab),
+                            Some(0),
+                        )),
+                    ],
+                ),
+                ..Default::default()
+            };
+            create_vial_rgui_tab_combo_keyboard(behavior_config)
+        },
+        sequence: [
+            [0, 1, true, 200],  // First tab-combo component
+            [0, 2, true, 10],   // Command HRM lands between combo components
+            [0, 0, true, 10],   // Second tab-combo component, still inside 35 ms
+            [0, 0, false, 10],
+            [0, 1, false, 10],
+            [0, 2, false, 20],
+        ],
+        expected_reports: [
+            [KC_RGUI, [0; 6]],
+            [KC_RGUI, [kc_to_u8!(Tab), 0, 0, 0, 0, 0]],
+            [KC_RGUI, [0; 6]],
             [0, [0; 6]],
         ]
     };
