@@ -161,8 +161,9 @@ where
 
         let connection_loop = async {
             loop {
+                let active_bond_info = profile_manager.active_bond_info();
                 match select(
-                    advertise(product_name, &mut peripheral, server),
+                    advertise(product_name, &mut peripheral, server, active_bond_info),
                     profile_manager.update_profile(),
                 )
                 .await
@@ -526,6 +527,7 @@ async fn advertise<'a, 'b, C: Controller>(
     name: &'a str,
     peripheral: &mut Peripheral<'a, C, DefaultPacketPool>,
     server: &'b Server<'_>,
+    active_bond_info: Option<ProfileInfo>,
 ) -> Result<GattConnection<'a, 'b, DefaultPacketPool>, BleHostError<C::Error>> {
     // Wait for 10ms to ensure the USB is checked
     embassy_time::Timer::after_millis(10).await;
@@ -554,6 +556,30 @@ async fn advertise<'a, 'b, C: Controller>(
 
     info!("[adv] advertising");
     set_ble_state(BleState::Advertising);
+    if let Some(peer) = active_bond_info.map(|info| info.info.identity.addr) {
+        info!("[adv] directed advertising to bonded peer: {:?}", peer);
+        let advertiser = peripheral
+            .advertise(
+                &advertise_config,
+                Advertisement::ConnectableNonscannableDirected { peer },
+            )
+            .await?;
+
+        match with_timeout(Duration::from_secs(10), advertiser.accept()).await {
+            Ok(conn_res) => {
+                let conn = conn_res?.with_attribute_server(server)?;
+                info!("[adv] directed connection established");
+                if let Err(e) = conn.raw().set_bondable(true) {
+                    error!("Set bondable error: {:?}", e);
+                };
+                return Ok(conn);
+            }
+            Err(_) => {
+                warn!("[adv] directed advertising timed out; falling back to undirected advertising");
+            }
+        }
+    }
+
     let advertiser = peripheral
         .advertise(
             &advertise_config,
