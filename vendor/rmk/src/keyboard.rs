@@ -644,7 +644,7 @@ impl<'a> Keyboard<'a> {
                     // was actually resolved. If prediction failed for a morse key, it still needs
                     // time to resolve (via gap timeout), so normal keys must stay buffered to
                     // preserve correct key ordering.
-                    if resolved {
+                    if resolved && !self.has_same_hand_unresolved_morse_before_normal(pos) {
                         decision_for_current_key = KeyBehaviorDecision::CleanBuffer;
                     }
                 }
@@ -703,6 +703,39 @@ impl<'a> Keyboard<'a> {
 
             idx += 1;
         }
+    }
+
+    fn has_same_hand_unresolved_morse_before_normal(&self, released_pos: KeyboardEventPos) -> bool {
+        let KeyboardEventPos::Key(released_key_pos) = released_pos else {
+            return false;
+        };
+        let released_hand = self
+            .keymap
+            .hand_at(released_key_pos.row as usize, released_key_pos.col as usize);
+
+        self.held_buffer
+            .keys
+            .iter()
+            .filter(|normal_key| {
+                !normal_key.action.is_morse() && matches!(normal_key.state, KeyState::Pressed(_))
+            })
+            .any(|normal_key| {
+                self.held_buffer.keys.iter().any(|morse_key| {
+                    let KeyboardEventPos::Key(morse_key_pos) = morse_key.event.pos else {
+                        return false;
+                    };
+                    morse_key.action.is_morse()
+                        && matches!(
+                            morse_key.state,
+                            KeyState::Pressed(_) | KeyState::Holding(_) | KeyState::Released(_)
+                        )
+                        && morse_key.press_time < normal_key.press_time
+                        && released_hand.is_same_side(
+                            self.keymap
+                                .hand_at(morse_key_pos.row as usize, morse_key_pos.col as usize),
+                        )
+                })
+            })
     }
 
     /// Make decisions for current key and each held key.

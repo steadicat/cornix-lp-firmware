@@ -73,6 +73,33 @@ fn test_flow_tap_word_order_after_idle_start_repro() {
 }
 
 #[test]
+fn test_flow_tap_word_order_buffers_normal_behind_unresolved_homerow() {
+    key_sequence_test! {
+        keyboard: create_flow_tap_word_order_keyboard(),
+        sequence: [
+            [0, 1, true, 200],  // K starts after idle, so it is not flow-tapped
+            [0, 2, true, 18],   // J is buffered behind K
+            [0, 3, true, 18],   // G must stay behind unresolved J
+            [0, 1, false, 18],  // K resolves as a tap
+            [0, 4, true, 18],   // Semicolon flow-taps and flushes J before G
+            [0, 3, false, 5],
+            [0, 4, false, 5],
+            [0, 2, false, 5],
+        ],
+        expected_reports: [
+            [0, [kc_to_u8!(K), 0, 0, 0, 0, 0]],
+            [0, [0; 6]],
+            [0, [kc_to_u8!(J), 0, 0, 0, 0, 0]],
+            [0, [kc_to_u8!(J), kc_to_u8!(G), 0, 0, 0, 0]],
+            [0, [kc_to_u8!(J), kc_to_u8!(G), kc_to_u8!(Semicolon), 0, 0, 0]],
+            [0, [kc_to_u8!(J), 0, kc_to_u8!(Semicolon), 0, 0, 0]],
+            [0, [kc_to_u8!(J), 0, 0, 0, 0, 0]],
+            [0, [0; 6]],
+        ]
+    };
+}
+
+#[test]
 fn test_flow_tap_word_order_with_inner_roll_overlap() {
     key_sequence_test! {
         keyboard: create_flow_tap_word_order_keyboard(),
