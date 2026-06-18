@@ -172,7 +172,11 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                 .remove_if(|k| !k.action.is_morse() && matches!(k.state, KeyState::Pressed(_)))
         {
             debug!("Trigger non-morse key: {:?}", key);
-            let action = self.keymap.borrow_mut().get_action_with_layer_cache(key.event);
+            let action = if key.is_combo_output {
+                key.action
+            } else {
+                self.keymap.borrow_mut().get_action_with_layer_cache(key.event)
+            };
             match action {
                 KeyAction::Single(action) => self.process_key_action_normal(action, key.event).await,
                 KeyAction::Tap(action) => self.process_key_action_tap(action, key.event).await,

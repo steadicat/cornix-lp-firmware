@@ -509,6 +509,53 @@ rusty_fork_test! {
     }
 
     #[test]
+    fn test_right_gui_hold_with_tab_combo_preserved_after_mod_tap_timeout() {
+        key_sequence_test! {
+            keyboard: {
+                let behavior_config = BehaviorConfig {
+                    morse: MorsesConfig {
+                        enable_flow_tap: true,
+                        prior_idle_time: Duration::from_millis(160),
+                        default_profile: MorseProfile::new(
+                            Some(true),
+                            Some(MorseMode::PermissiveHold),
+                            Some(240u16),
+                            Some(240u16)
+                        ),
+                        ..Default::default()
+                    },
+                    combo: combos_config(
+                        Duration::from_millis(35),
+                        &[
+                            Combo::new(ComboConfig::new(
+                                [k!(C), k!(V)],
+                                k!(Tab),
+                                None,
+                            )),
+                        ],
+                    ),
+                    ..Default::default()
+                };
+                create_vial_rgui_tab_combo_keyboard(behavior_config)
+            },
+            sequence: [
+                [0, 2, true, 200],  // Press RGUI_T(K) after flow-tap prior idle expires
+                [0, 0, true, 0],    // Press C, first Tab combo key
+                [0, 1, true, 34],   // Press V within the 35 ms combo term
+                [0, 0, false, 210], // Hold overlapped combo keys until RGUI_T(K) times out
+                [0, 1, false, 1],
+                [0, 2, false, 1],
+            ],
+            expected_reports: [
+                [KC_RGUI, [0; 6]],
+                [KC_RGUI, [kc_to_u8!(Tab), 0, 0, 0, 0, 0]],
+                [KC_RGUI, [0; 6]],
+                [0, [0; 6]],
+            ]
+        };
+    }
+
+    #[test]
     fn test_vial_tab_combo_survives_interleaved_command_home_row_mod_press() {
         key_sequence_test! {
             keyboard: {
