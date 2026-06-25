@@ -273,11 +273,11 @@ impl Default for MouseKeyConfig {
             time_to_max: 50,               // 1.0 second to max
             wheel_initial_delay_ms: 100,   // 100ms initial wheel delay
             wheel_repeat_interval_ms: 80,  // 80ms between wheel movements
-            wheel_delta: 1,                // 1 wheel unit per movement
+            wheel_delta: 5,                // 5 wheel units per movement
             wheel_max_speed_multiplier: 3, // Conservative wheel max speed
             wheel_time_to_max: 40,         // 0.5 second to max
             move_max: 20,                  // Maximum movement per report
-            wheel_max: 4,                  // Maximum wheel movement per report
+            wheel_max: 15,                 // Maximum wheel movement per report
         }
     }
 }
