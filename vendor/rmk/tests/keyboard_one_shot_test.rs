@@ -50,6 +50,31 @@ mod one_shot_test {
         k!(B),
     ]]];
 
+    const OSM_AFTER_PRIOR_KEY_ROLL_KEYMAP: [[[KeyAction; 3]; 1]; 1] = [[[
+        k!(X),
+        osm!(ModifierCombination::new_from(false, false, false, true, false)), // OSM LShift
+        k!(Slash),
+    ]]];
+
+    const SPARSE_OSM_ROLL_KEYMAP: [[[KeyAction; 7]; 8]; 1] = [[
+        [KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No],
+        [KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No],
+        [KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, k!(B), KeyAction::No],
+        [
+            KeyAction::No,
+            KeyAction::No,
+            KeyAction::No,
+            KeyAction::No,
+            KeyAction::No,
+            osm!(ModifierCombination::new_from(false, false, false, true, false)),
+            KeyAction::No,
+        ],
+        [KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No],
+        [k!(LeftBracket), KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No],
+        [KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No],
+        [KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No, KeyAction::No],
+    ]];
+
     fn create_test_keyboard() -> Keyboard<'static, 1, 6, 2> {
         static BEHAVIOR_CONFIG: static_cell::StaticCell<BehaviorConfig> = static_cell::StaticCell::new();
         let behavior_config = BEHAVIOR_CONFIG.init(BehaviorConfig::default());
@@ -78,6 +103,29 @@ mod one_shot_test {
         static KEY_CONFIG: static_cell::StaticCell<PositionalConfig<1, 3>> = static_cell::StaticCell::new();
         let per_key_config = KEY_CONFIG.init(PositionalConfig::default());
         let keymap: &RefCell<KeyMap<1, 3, 1>> = wrap_keymap(OSM_ROLLOVER_KEYMAP, per_key_config, behavior_config);
+        Keyboard::new(keymap)
+    }
+
+    fn create_osm_after_prior_key_roll_keyboard() -> Keyboard<'static, 1, 3, 1> {
+        static BEHAVIOR_CONFIG: static_cell::StaticCell<BehaviorConfig> = static_cell::StaticCell::new();
+        let behavior_config = BEHAVIOR_CONFIG.init(BehaviorConfig::default());
+        static KEY_CONFIG: static_cell::StaticCell<PositionalConfig<1, 3>> = static_cell::StaticCell::new();
+        let per_key_config = KEY_CONFIG.init(PositionalConfig::default());
+        let keymap: &RefCell<KeyMap<1, 3, 1>> = wrap_keymap(
+            OSM_AFTER_PRIOR_KEY_ROLL_KEYMAP,
+            per_key_config,
+            behavior_config,
+        );
+        Keyboard::new(keymap)
+    }
+
+    fn create_sparse_osm_roll_keyboard() -> Keyboard<'static, 8, 7, 1> {
+        static BEHAVIOR_CONFIG: static_cell::StaticCell<BehaviorConfig> = static_cell::StaticCell::new();
+        let behavior_config = BEHAVIOR_CONFIG.init(BehaviorConfig::default());
+        static KEY_CONFIG: static_cell::StaticCell<PositionalConfig<8, 7>> = static_cell::StaticCell::new();
+        let per_key_config = KEY_CONFIG.init(PositionalConfig::default());
+        let keymap: &RefCell<KeyMap<8, 7, 1>> =
+            wrap_keymap(SPARSE_OSM_ROLL_KEYMAP, per_key_config, behavior_config);
         Keyboard::new(keymap)
     }
 
@@ -171,6 +219,48 @@ mod one_shot_test {
                     [KC_LSHIFT, [kc_to_u8!(A), 0, 0, 0, 0, 0]],
                     [0, [kc_to_u8!(A), kc_to_u8!(B), 0, 0, 0, 0]],
                     [0, [0, kc_to_u8!(B), 0, 0, 0, 0]],
+                    [0, [0, 0, 0, 0, 0, 0]],
+                ]
+            };
+        }
+
+        #[test]
+        fn test_osm_tap_during_prior_key_roll_applies_to_next_key() {
+            key_sequence_test! {
+                keyboard: create_osm_after_prior_key_roll_keyboard(),
+                sequence: [
+                    [0, 0, true, 10],   // Press X
+                    [0, 1, true, 10],   // Press OSM LShift while X is still held
+                    [0, 0, false, 10],  // Release X; this should not convert the one-shot to held
+                    [0, 1, false, 10],  // Release OSM LShift after X
+                    [0, 2, true, 30],   // Press Slash after a short disconnected pause
+                    [0, 2, false, 10],  // Release Slash
+                ],
+                expected_reports: [
+                    [0, [kc_to_u8!(X), 0, 0, 0, 0, 0]],
+                    [0, [0, 0, 0, 0, 0, 0]],
+                    [KC_LSHIFT, [kc_to_u8!(Slash), 0, 0, 0, 0, 0]],
+                    [0, [0, 0, 0, 0, 0, 0]],
+                ]
+            };
+        }
+
+        #[test]
+        fn test_sparse_matrix_roll_to_osm_applies_to_next_key() {
+            key_sequence_test! {
+                keyboard: create_sparse_osm_roll_keyboard(),
+                sequence: [
+                    [2, 5, true, 10],   // Press prior key
+                    [3, 5, true, 10],   // Press OSM LShift while prior key is still held
+                    [2, 5, false, 10],  // Release prior key while OSM LShift is still held
+                    [3, 5, false, 10],  // Release OSM LShift; the prior release should not make it held
+                    [5, 0, true, 30],   // Press later key after a short disconnected pause
+                    [5, 0, false, 10],  // Release later key
+                ],
+                expected_reports: [
+                    [0, [kc_to_u8!(B), 0, 0, 0, 0, 0]],
+                    [0, [0, 0, 0, 0, 0, 0]],
+                    [KC_LSHIFT, [kc_to_u8!(LeftBracket), 0, 0, 0, 0, 0]],
                     [0, [0, 0, 0, 0, 0, 0]],
                 ]
             };

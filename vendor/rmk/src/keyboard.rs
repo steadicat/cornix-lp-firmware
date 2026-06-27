@@ -1654,7 +1654,7 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
         } else {
             warn!("Unsupported key: {:?}", key);
         }
-        self.update_osm_after_key();
+        self.update_osm_after_key(event);
         self.update_osl_after_key();
     }
 
@@ -2138,10 +2138,10 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
         }
     }
 
-    fn update_osm_after_key(&mut self) {
+    fn update_osm_after_key(&mut self, event: KeyboardEvent) {
         match self.osm_state {
-            OneShotState::Initial(m) => self.osm_state = OneShotState::Held(m),
-            OneShotState::Single(_) => self.osm_state = OneShotState::None,
+            OneShotState::Initial(m) if event.pressed => self.osm_state = OneShotState::Held(m),
+            OneShotState::Single(_) if event.pressed => self.osm_state = OneShotState::None,
             _ => (),
         }
     }
