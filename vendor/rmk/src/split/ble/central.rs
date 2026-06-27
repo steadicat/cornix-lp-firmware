@@ -16,7 +16,7 @@ use {
     crate::event::ControllerEvent,
 };
 
-use crate::ble::{SLEEPING_STATE, update_ble_phy, update_conn_params};
+use crate::ble::{SLEEPING_STATE, update_conn_params};
 use crate::channel::FLASH_CHANNEL;
 #[cfg(feature = "storage")]
 use crate::split::ble::PeerAddress;
@@ -311,8 +311,8 @@ async fn run_central_manager_task<
 ) -> Result<(), BleHostError<C::Error>> {
     let client = GattClient::<C, P, 10>::new(stack, conn).await?;
 
-    // Use 2M Phy
-    update_ble_phy(stack, conn).await;
+    // Use the longer-range 1M PHY for the split link.
+    update_split_ble_phy(stack, conn).await;
 
     info!("Updating connection parameters for peripheral");
     update_conn_params(stack, conn, &defaul_central_conn_param()).await;
@@ -347,6 +347,33 @@ async fn ble_central_task<'a, C: Controller + ControllerCmdAsync<LeSetPhy>, P: P
             info!("Connection lost");
             Ok(())
         }
+    }
+}
+
+async fn update_split_ble_phy<P: PacketPool>(
+    stack: &Stack<'_, impl Controller + ControllerCmdAsync<LeSetPhy>, P>,
+    conn: &Connection<'_, P>,
+) {
+    loop {
+        match conn.set_phy(stack, PhyKind::Le1M).await {
+            Err(BleHostError::BleHost(Error::Hci(error))) => {
+                if 0x2A == error.to_status().into_inner() {
+                    info!("[update_split_ble_phy] HCI busy: {:?}", error);
+                    continue;
+                } else {
+                    error!("[update_split_ble_phy] HCI error: {:?}", error);
+                }
+            }
+            Err(e) => {
+                #[cfg(feature = "defmt")]
+                let e = defmt::Debug2Format(&e);
+                error!("[update_split_ble_phy] error: {:?}", e);
+            }
+            Ok(_) => {
+                info!("[update_split_ble_phy] PHY updated to 1M");
+            }
+        }
+        break;
     }
 }
 

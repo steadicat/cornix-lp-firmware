@@ -5,20 +5,24 @@ use rmk::channel::{CONTROLLER_CHANNEL, ControllerSub};
 use rmk::controller::{Controller, PollingController};
 use rmk::event::ControllerEvent;
 
-const STATUS_INTERVAL_MS: u64 = 33;
+const STATUS_INTERVAL_MS: u64 = 500;
 const RAIL_SETTLE_MS: u64 = 5;
 
-const BREATH_FRAMES: u32 = 60;
-const BLINK_PERIOD: u32 = 30;
-const BLINK_ON: u32 = 12;
+const BLINK_PERIOD_MS: u64 = 2_000;
+const BLINK_ON_MS: u64 = 500;
+const LOW_BATTERY_BLINK_PERIOD_MS: u64 = 3_000;
+const STATUS_SHOW_MS: u64 = 3_000;
 const BLINK_MAX_CYCLES: u32 = 10;
-const CONNECT_SHOW_FRAMES: u32 = 75;
-const PEER_SHOW_FRAMES: u32 = 90;
-const FULL_SHOW_FRAMES: u32 = 90;
 const LEVEL: u8 = 0x10;
-const BREATH_PEAK: u8 = 0x20;
 const BATTERY_LOW: u8 = 20;
 const BATTERY_FULL: u8 = 95;
+
+const BLINK_PERIOD_FRAMES: u32 = frames_for_ms(BLINK_PERIOD_MS);
+const BLINK_ON_FRAMES: u32 = frames_for_ms(BLINK_ON_MS);
+const LOW_BATTERY_BLINK_PERIOD_FRAMES: u32 = frames_for_ms(LOW_BATTERY_BLINK_PERIOD_MS);
+const CONNECT_SHOW_FRAMES: u32 = frames_for_ms(STATUS_SHOW_MS);
+const PEER_SHOW_FRAMES: u32 = frames_for_ms(STATUS_SHOW_MS);
+const FULL_SHOW_FRAMES: u32 = frames_for_ms(STATUS_SHOW_MS);
 
 pub const PWM_TOP: u16 = 20;
 const W0: u16 = 0x8000 | 6;
@@ -28,21 +32,10 @@ const SEQ_BITS: usize = 2 * 3 * 8;
 const SEQ_RESET: usize = 40;
 const SEQ_LEN: usize = SEQ_BITS + SEQ_RESET;
 
-const fn breath_table() -> [u8; BREATH_FRAMES as usize] {
-    let mut table = [0_u8; BREATH_FRAMES as usize];
-    let half = BREATH_FRAMES / 2;
-    let mut i = 0_u32;
-
-    while i < BREATH_FRAMES {
-        let up = if i <= half { i } else { BREATH_FRAMES - i };
-        table[i as usize] = ((up * BREATH_PEAK as u32) / half) as u8;
-        i += 1;
-    }
-
-    table
+const fn frames_for_ms(ms: u64) -> u32 {
+    let frames = (ms + STATUS_INTERVAL_MS - 1) / STATUS_INTERVAL_MS;
+    if frames == 0 { 1 } else { frames as u32 }
 }
-
-static BREATH: [u8; BREATH_FRAMES as usize] = breath_table();
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -146,13 +139,13 @@ impl CornixIndicator {
     }
 
     fn blink_on(&self) -> bool {
-        let cycle = self.frame / BLINK_PERIOD;
-        cycle < BLINK_MAX_CYCLES && (self.frame % BLINK_PERIOD) < BLINK_ON
+        let cycle = self.frame / BLINK_PERIOD_FRAMES;
+        cycle < BLINK_MAX_CYCLES && (self.frame % BLINK_PERIOD_FRAMES) < BLINK_ON_FRAMES
     }
 
     fn double_blink_on(&self) -> bool {
-        let phase = self.frame % BLINK_PERIOD;
-        phase < 6 || (12..18).contains(&phase)
+        let phase = self.frame % LOW_BATTERY_BLINK_PERIOD_FRAMES;
+        phase < BLINK_ON_FRAMES || (BLINK_ON_FRAMES * 2..BLINK_ON_FRAMES * 3).contains(&phase)
     }
 
     fn inner_color(&self) -> Grb {
@@ -165,11 +158,7 @@ impl CornixIndicator {
                 };
             }
 
-            return Grb {
-                green: BREATH[(self.frame % BREATH_FRAMES) as usize],
-                red: 0,
-                blue: 0,
-            };
+            return GREEN;
         }
 
         if self.side == Side::Central {
