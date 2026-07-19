@@ -139,13 +139,55 @@ impl CapsWordState {
     /// Note that this function does not check the CapsWord key itself.
     fn check(&mut self, key: KeyCode) {
         if let CapsWordState::Activated { timer, shift_current } = self {
-            if key.is_caps_word_continue_key() && timer.elapsed() < Self::TIMEOUT {
+            if Self::is_dvorak_caps_word_continue_key(key) && timer.elapsed() < Self::TIMEOUT {
                 *timer = Instant::now();
-                *shift_current = key.is_caps_word_shifted_key();
+                *shift_current = Self::is_dvorak_caps_word_shifted_key(key);
             } else {
                 self.deactivate();
             }
         }
+    }
+
+    fn is_dvorak_caps_word_continue_key(key: KeyCode) -> bool {
+        Self::is_dvorak_caps_word_shifted_key(key)
+            || (key >= KeyCode::Kc1 && key <= KeyCode::Kc0)
+            || matches!(key, KeyCode::Backspace | KeyCode::Delete)
+    }
+
+    fn is_dvorak_caps_word_shifted_key(key: KeyCode) -> bool {
+        Self::is_dvorak_letter_key(key) || matches!(key, KeyCode::Quote)
+    }
+
+    fn is_dvorak_letter_key(key: KeyCode) -> bool {
+        matches!(
+            key,
+            KeyCode::A
+                | KeyCode::B
+                | KeyCode::C
+                | KeyCode::D
+                | KeyCode::F
+                | KeyCode::G
+                | KeyCode::H
+                | KeyCode::I
+                | KeyCode::J
+                | KeyCode::K
+                | KeyCode::L
+                | KeyCode::M
+                | KeyCode::N
+                | KeyCode::O
+                | KeyCode::P
+                | KeyCode::R
+                | KeyCode::S
+                | KeyCode::T
+                | KeyCode::U
+                | KeyCode::V
+                | KeyCode::X
+                | KeyCode::Y
+                | KeyCode::Semicolon
+                | KeyCode::Comma
+                | KeyCode::Dot
+                | KeyCode::Slash
+        )
     }
 
     fn has_command_modifier(modifiers: ModifierCombination) -> bool {
@@ -2699,6 +2741,32 @@ mod test {
                 assert_eq!(keyboard.held_keycodes[0], KeyCode::A);
             };
             block_on(main);
+        }
+
+        #[test]
+        fn test_dvorak_caps_word_predicates() {
+            for key in [
+                KeyCode::Semicolon,
+                KeyCode::Comma,
+                KeyCode::Dot,
+                KeyCode::Slash,
+            ] {
+                assert!(CapsWordState::is_dvorak_caps_word_continue_key(key));
+                assert!(CapsWordState::is_dvorak_caps_word_shifted_key(key));
+            }
+
+            for key in [KeyCode::Q, KeyCode::W, KeyCode::E, KeyCode::Z] {
+                assert!(!CapsWordState::is_dvorak_caps_word_continue_key(key));
+                assert!(!CapsWordState::is_dvorak_caps_word_shifted_key(key));
+            }
+
+            assert!(CapsWordState::is_dvorak_caps_word_continue_key(KeyCode::Quote));
+            assert!(CapsWordState::is_dvorak_caps_word_shifted_key(KeyCode::Quote));
+            assert!(!CapsWordState::is_dvorak_caps_word_continue_key(KeyCode::Minus));
+            assert!(CapsWordState::is_dvorak_caps_word_continue_key(KeyCode::Kc1));
+            assert!(!CapsWordState::is_dvorak_caps_word_shifted_key(KeyCode::Kc1));
+            assert!(CapsWordState::is_dvorak_caps_word_continue_key(KeyCode::Backspace));
+            assert!(!CapsWordState::is_dvorak_caps_word_shifted_key(KeyCode::Backspace));
         }
 
         #[test]
