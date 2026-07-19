@@ -123,6 +123,8 @@ pub struct HeldKey {
     pub is_combo_output: bool,
     /// Current state of the held key
     pub state: KeyState,
+    /// Time of the first press in this morse sequence.
+    pub sequence_start_time: Instant,
     /// The press time for the key
     pub press_time: Instant,
     /// The timeout time for the key
@@ -142,6 +144,7 @@ impl HeldKey {
             action,
             is_combo_output: false,
             state,
+            sequence_start_time: press_time,
             press_time,
             timeout_time,
         }

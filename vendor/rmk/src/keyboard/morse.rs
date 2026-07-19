@@ -167,9 +167,9 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
         self.held_buffer.keys.sort_unstable_by_key(|k| k.press_time);
 
         // Trigger buffered normal keys, but leave combo candidates buffered for combo completion/timeout.
-        while let Some(key) =
-            self.held_buffer
-                .remove_if(|k| !k.action.is_morse() && matches!(k.state, KeyState::Pressed(_)))
+        while let Some(key) = self.held_buffer.remove_if(|k| {
+            !k.action.is_morse() && matches!(k.state, KeyState::Pressed(_) | KeyState::Released(_))
+        })
         {
             debug!("Trigger non-morse key: {:?}", key);
             let action = if key.is_combo_output {
@@ -177,9 +177,12 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
             } else {
                 self.keymap.borrow_mut().get_action_with_layer_cache(key.event)
             };
-            match action {
-                KeyAction::Single(action) => self.process_key_action_normal(action, key.event).await,
-                KeyAction::Tap(action) => self.process_key_action_tap(action, key.event).await,
+            match (key.state, action) {
+                (KeyState::Released(_), KeyAction::Single(action) | KeyAction::Tap(action)) => {
+                    self.process_key_action_tap(action, key.event).await
+                }
+                (_, KeyAction::Single(action)) => self.process_key_action_normal(action, key.event).await,
+                (_, KeyAction::Tap(action)) => self.process_key_action_tap(action, key.event).await,
                 _ => (),
             }
         }

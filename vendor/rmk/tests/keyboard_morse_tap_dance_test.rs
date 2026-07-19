@@ -2,7 +2,7 @@
 pub mod common;
 
 use heapless::Vec;
-use rmk::config::{BehaviorConfig, MorsesConfig, PositionalConfig};
+use rmk::config::{BehaviorConfig, Hand, MorsesConfig, PositionalConfig};
 use rmk::keyboard::Keyboard;
 use rmk::morse::Morse;
 use rmk::types::action::{Action, MorseMode, MorseProfile};
@@ -11,7 +11,7 @@ use rmk::types::modifier::ModifierCombination;
 use rmk::{k, td};
 use rusty_fork::rusty_fork_test;
 
-use crate::common::wrap_keymap;
+use crate::common::{KC_LSHIFT, wrap_keymap};
 
 pub fn create_tap_dance_test_keyboard() -> Keyboard<'static, 1, 4, 2> {
     let keymap = [
@@ -61,6 +61,43 @@ pub fn create_tap_dance_test_keyboard() -> Keyboard<'static, 1, 4, 2> {
     let behavior_config = BEHAVIOR_CONFIG.init(behavior_config);
     static KEY_CONFIG: static_cell::StaticCell<PositionalConfig<1, 4>> = static_cell::StaticCell::new();
     let per_key_config = KEY_CONFIG.init(PositionalConfig::default());
+    Keyboard::new(wrap_keymap(keymap, per_key_config, behavior_config))
+}
+
+pub fn create_tap_dance_shift_test_keyboard() -> Keyboard<'static, 1, 3, 1> {
+    let keymap = [[[
+        k!(A),
+        td!(0),
+        k!(B),
+    ]]];
+    let behavior_config = BehaviorConfig {
+        morse: MorsesConfig {
+            enable_flow_tap: false,
+            default_profile: MorseProfile::new(
+                Some(false),
+                Some(MorseMode::Normal),
+                Some(250u16),
+                Some(250u16),
+            ),
+            morses: Vec::from_slice(&[Morse::new_from_vial(
+                Action::OneShotModifier(ModifierCombination::LSHIFT),
+                Action::Modifier(ModifierCombination::LSHIFT),
+                Action::No,
+                Action::Key(KeyCode::CapsWordToggle),
+                MorseProfile::const_default(),
+            )])
+            .unwrap(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    static BEHAVIOR_CONFIG: static_cell::StaticCell<BehaviorConfig> =
+        static_cell::StaticCell::new();
+    let behavior_config = BEHAVIOR_CONFIG.init(behavior_config);
+    static KEY_CONFIG: static_cell::StaticCell<PositionalConfig<1, 3>> =
+        static_cell::StaticCell::new();
+    let per_key_config = KEY_CONFIG.init(PositionalConfig::new([[Hand::Left; 3]]));
     Keyboard::new(wrap_keymap(keymap, per_key_config, behavior_config))
 }
 
@@ -162,6 +199,27 @@ rusty_fork_test! {
                 [0, [kc_to_u8!(Y), 0, 0, 0, 0, 0]],
                 [0, [kc_to_u8!(Y), kc_to_u8!(A), 0, 0, 0, 0]],
                 [0, [kc_to_u8!(Y), 0, 0, 0, 0, 0]],
+                [0, [0, 0, 0, 0, 0, 0]],
+            ]
+        };
+    }
+
+    #[test]
+    fn test_tap_dance_oneshot_shift_during_overlapping_roll() {
+        key_sequence_test! {
+            keyboard: create_tap_dance_shift_test_keyboard(),
+            sequence: [
+                [0, 1, true, 150],  // Press tap-dance Shift
+                [0, 0, true, 10],   // Roll to A
+                [0, 1, false, 10],  // Release tap-dance Shift
+                [0, 0, false, 10],  // Release A within the tapping term
+                [0, 2, true, 250],  // Press B after the tap resolves
+                [0, 2, false, 10],  // Release B
+            ],
+            expected_reports: [
+                [KC_LSHIFT, [kc_to_u8!(A), 0, 0, 0, 0, 0]],
+                [0, [0, 0, 0, 0, 0, 0]],
+                [0, [kc_to_u8!(B), 0, 0, 0, 0, 0]],
                 [0, [0, 0, 0, 0, 0, 0]],
             ]
         };

@@ -310,8 +310,9 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
     /// or a morse key that is in the pressed or released state.
     pub fn next_buffered_key(&mut self) -> Option<HeldKey> {
         self.held_buffer.next_timeout(|k| {
-            matches!(k.state, KeyState::Released(_) | KeyState::WaitingCombo)
-                || (matches!(k.state, KeyState::Pressed(_)) && k.action.is_morse())
+            matches!(k.state, KeyState::WaitingCombo)
+                || (k.action.is_morse()
+                    && matches!(k.state, KeyState::Pressed(_) | KeyState::Released(_)))
         })
     }
 
@@ -486,6 +487,7 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                     time_out,
                 ));
             }
+            KeyBehaviorDecision::Defer => {}
         }
     }
 
@@ -588,6 +590,27 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                     }
                 }
                 HeldKeyDecision::Release => {
+                    let deferred_until = self
+                        .held_buffer
+                        .find_pos(pos)
+                        .copied()
+                        .and_then(|key| self.unresolved_morse_timeout_before(&key));
+
+                    if let Some(timeout_time) = deferred_until {
+                        if let Some(key) = self.held_buffer.find_pos_mut(pos) {
+                            let pattern = match key.state {
+                                KeyState::Pressed(pattern) => pattern.followed_by_tap(),
+                                KeyState::Holding(pattern) | KeyState::Released(pattern) => pattern,
+                                _ => MorsePattern::default(),
+                            };
+                            key.state = KeyState::Released(pattern);
+                            key.timeout_time = timeout_time + Duration::from_millis(1);
+                            self.held_buffer.keys.sort_unstable_by_key(|k| k.timeout_time);
+                        }
+                        decision_for_current_key = KeyBehaviorDecision::Defer;
+                        continue;
+                    }
+
                     // Releasing the current key, will always be tapping, because timeout isn't here
                     let mut resolved = false;
                     if let Some(mut held_key) = self.held_buffer.remove_if(|k| k.event.pos == pos) {
@@ -670,6 +693,27 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
             }
         }
         (keyboard_state_updated, decision_for_current_key)
+    }
+
+    fn unresolved_morse_timeout_before(&self, key: &HeldKey) -> Option<Instant> {
+        let keymap = self.keymap.borrow();
+        let behavior = &*keymap.behavior;
+        self.held_buffer
+            .keys
+            .iter()
+            .filter(|prior| {
+                prior.event.pos != key.event.pos
+                    && prior.action.is_morse()
+                    && prior.sequence_start_time < key.sequence_start_time
+                    && match prior.state {
+                        KeyState::Released(pattern) => {
+                            Self::try_predict_final_action(behavior, &prior.action, pattern).is_none()
+                        }
+                        _ => false,
+                    }
+            })
+            .map(|prior| prior.timeout_time)
+            .max()
     }
 
     fn action_updates_layer_state(action: Action, event: KeyboardEvent) -> bool {
@@ -1423,6 +1467,12 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
             match self.osm_state {
                 OneShotState::Initial(m) | OneShotState::Single(m) => {
                     self.osm_state = OneShotState::Single(m);
+                    if self.held_buffer.keys.iter().any(|key| {
+                        key.event.pos != event.pos
+                            && matches!(key.state, KeyState::Pressed(_) | KeyState::Released(_))
+                    }) {
+                        return;
+                    }
                     let timeout = Timer::after(self.keymap.borrow().behavior.one_shot.timeout);
                     match select(timeout, KEY_EVENT_CHANNEL.receive()).await {
                         Either::First(_) => {
@@ -2431,6 +2481,8 @@ pub enum KeyBehaviorDecision {
     Release,
     // Flow tap of current key is triggered
     FlowTap,
+    // A prior morse sequence is unresolved; retain this event in the held buffer
+    Defer,
 }
 
 #[derive(Debug, PartialEq, Eq)]
