@@ -560,25 +560,34 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                             debug!("Cleaning buffered morse key due to permissive hold or hold on other key press");
                             match held_key.state {
                                 KeyState::Pressed(_) | KeyState::Holding(_) => {
-                                    // In this state pattern is not surely finished,
-                                    // however an other key is pressed so terminate the sequence
-                                    // with a hold due to PermissiveHold/HoldOnOtherKeyPress decision; try to resolve as is
-                                    let pattern = match held_key.state {
-                                        KeyState::Pressed(pattern) => pattern.followed_by_hold(), // The HeldKeyDecision turned this into hold!
-                                        KeyState::Holding(pattern) => pattern,
-                                        _ => unreachable!(),
-                                    };
-                                    keyboard_state_updated = true;
-                                    debug!("pattern after permissive hold: {:?}", pattern);
-                                    let action =
-                                        Self::action_from_pattern(self.keymap.borrow().behavior, &action, pattern);
-                                    self.process_key_action_normal(action, held_key.event).await;
-                                    if Self::action_updates_layer_state(action, held_key.event) {
-                                        self.refresh_buffered_actions_after_layer_change(held_key.press_time);
+                                    // Keep an OSM tap dance one-shot when a roll resolves it early.
+                                    // A tapping-term timeout still uses its configured hold action.
+                                    let tap_action =
+                                        Self::action_from_pattern(self.keymap.borrow().behavior, &action, TAP);
+                                    if let Action::OneShotModifier(modifiers) = tap_action {
+                                        debug!("Early OSM roll resolution, arm one-shot modifier");
+                                        self.arm_oneshot_modifier(modifiers, held_key.event);
+                                    } else {
+                                        // In this state pattern is not surely finished,
+                                        // however an other key is pressed so terminate the sequence
+                                        // with a hold due to PermissiveHold/HoldOnOtherKeyPress decision; try to resolve as is
+                                        let pattern = match held_key.state {
+                                            KeyState::Pressed(pattern) => pattern.followed_by_hold(), // The HeldKeyDecision turned this into hold!
+                                            KeyState::Holding(pattern) => pattern,
+                                            _ => unreachable!(),
+                                        };
+                                        keyboard_state_updated = true;
+                                        debug!("pattern after permissive hold: {:?}", pattern);
+                                        let action =
+                                            Self::action_from_pattern(self.keymap.borrow().behavior, &action, pattern);
+                                        self.process_key_action_normal(action, held_key.event).await;
+                                        if Self::action_updates_layer_state(action, held_key.event) {
+                                            self.refresh_buffered_actions_after_layer_change(held_key.press_time);
+                                        }
+                                        held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action);
+                                        // Push back after triggered hold
+                                        self.held_buffer.push_without_sort(held_key);
                                     }
-                                    held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action);
-                                    // Push back after triggered hold
-                                    self.held_buffer.push_without_sort(held_key);
                                 }
                                 KeyState::Released(pattern) => {
                                     debug!("pattern after released, permissive hold: {:?}", pattern);

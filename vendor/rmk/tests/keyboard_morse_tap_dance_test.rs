@@ -375,6 +375,60 @@ rusty_fork_test! {
     }
 
     #[test]
+    fn test_tap_dance_oneshot_shift_during_nested_roll_shifts_only_first_key() {
+        key_sequence_test! {
+            keyboard: create_tap_dance_shift_dvorak_roll_keyboard(
+                Hand::Unknown,
+                MorseMode::PermissiveHold,
+                true,
+                true,
+                240,
+            ),
+            sequence: [
+                [0, 0, true, 250],  // Press tap-dance Shift after idle
+                [0, 1, true, 10],   // Firmware G produces host-Dvorak I
+                [0, 2, true, 1],    // Firmware Q produces host-Dvorak apostrophe
+                [0, 1, false, 1],   // Release I while Shift remains physically held
+                [0, 0, false, 1],
+                [0, 2, false, 1],
+            ],
+            expected_reports: [
+                [KC_LSHIFT, [kc_to_u8!(G), 0, 0, 0, 0, 0]],
+                [0, [kc_to_u8!(G), kc_to_u8!(Q), 0, 0, 0, 0]],
+                [0, [0, kc_to_u8!(Q), 0, 0, 0, 0]],
+                [0, [0; 6]],
+            ]
+        };
+    }
+
+    #[test]
+    fn test_tap_dance_oneshot_shift_during_nested_roll_when_shift_releases_first() {
+        key_sequence_test! {
+            keyboard: create_tap_dance_shift_dvorak_roll_keyboard(
+                Hand::Unknown,
+                MorseMode::PermissiveHold,
+                true,
+                true,
+                240,
+            ),
+            sequence: [
+                [0, 0, true, 250],
+                [0, 1, true, 10],
+                [0, 2, true, 1],
+                [0, 0, false, 1],   // Release tap-dance Shift first
+                [0, 1, false, 1],
+                [0, 2, false, 1],
+            ],
+            expected_reports: [
+                [KC_LSHIFT, [kc_to_u8!(G), 0, 0, 0, 0, 0]],
+                [0, [kc_to_u8!(G), kc_to_u8!(Q), 0, 0, 0, 0]],
+                [0, [0, kc_to_u8!(Q), 0, 0, 0, 0]],
+                [0, [0; 6]],
+            ]
+        };
+    }
+
+    #[test]
     fn test_tap_dance_oneshot_shift_preserves_repeated_buffered_key() {
         key_sequence_test! {
             keyboard: create_tap_dance_shift_roll_keyboard(false, false, MorseMode::Normal),
@@ -422,19 +476,17 @@ rusty_fork_test! {
     }
 
     #[test]
-    fn test_tap_dance_shift_permissive_hold_after_nested_tap() {
+    fn test_tap_dance_oneshot_shift_after_nested_tap() {
         key_sequence_test! {
             keyboard: create_tap_dance_shift_roll_keyboard(false, false, MorseMode::PermissiveHold),
             sequence: [
                 [0, 0, true, 250],  // Press tap-dance Shift
                 [0, 1, true, 10],   // Press A while Shift remains physically held
-                [0, 1, false, 10],  // Releasing A resolves tap dance as held Shift
+                [0, 1, false, 10],  // Releasing A resolves the one-shot immediately
                 [0, 0, false, 10],  // Release tap-dance Shift
             ],
             expected_reports: [
-                [KC_LSHIFT, [0, 0, 0, 0, 0, 0]],
                 [KC_LSHIFT, [kc_to_u8!(A), 0, 0, 0, 0, 0]],
-                [KC_LSHIFT, [0, 0, 0, 0, 0, 0]],
                 [0, [0, 0, 0, 0, 0, 0]],
             ]
         };
@@ -459,9 +511,7 @@ rusty_fork_test! {
                 [0, 2, false, 10],
             ],
             expected_reports: [
-                [KC_LSHIFT, [0, 0, 0, 0, 0, 0]],
                 [KC_LSHIFT, [kc_to_u8!(G), 0, 0, 0, 0, 0]],
-                [KC_LSHIFT, [0, 0, 0, 0, 0, 0]],
                 [0, [0, 0, 0, 0, 0, 0]],
                 [0, [kc_to_u8!(Q), 0, 0, 0, 0, 0]],
                 [0, [0, 0, 0, 0, 0, 0]],
@@ -497,7 +547,7 @@ rusty_fork_test! {
     }
 
     #[test]
-    fn test_tap_dance_shift_permissive_hold_wins_for_thumb_key() {
+    fn test_tap_dance_oneshot_roll_wins_for_thumb_key() {
         key_sequence_test! {
             keyboard: create_tap_dance_shift_dvorak_roll_keyboard(
                 Hand::Unknown,
@@ -509,13 +559,11 @@ rusty_fork_test! {
             sequence: [
                 [0, 0, true, 250],  // Press tap-dance Shift
                 [0, 1, true, 10],   // Press G while Shift remains physically held
-                [0, 1, false, 10],  // A nested tap should resolve Shift as a hold
+                [0, 1, false, 10],  // A nested tap should resolve the one-shot promptly
                 [0, 0, false, 10],  // Release tap-dance Shift
             ],
             expected_reports: [
-                [KC_LSHIFT, [0, 0, 0, 0, 0, 0]],
                 [KC_LSHIFT, [kc_to_u8!(G), 0, 0, 0, 0, 0]],
-                [KC_LSHIFT, [0, 0, 0, 0, 0, 0]],
                 [0, [0, 0, 0, 0, 0, 0]],
             ]
         };
@@ -557,7 +605,6 @@ rusty_fork_test! {
                     [
                         KEYBOARD_REPORT_CHANNEL.receive().await,
                         KEYBOARD_REPORT_CHANNEL.receive().await,
-                        KEYBOARD_REPORT_CHANNEL.receive().await,
                     ]
                 })
                 .await
@@ -569,18 +616,12 @@ rusty_fork_test! {
                 let expected = [
                     KeyboardReport {
                         modifier: KC_LSHIFT,
-                        keycodes: [0; 6],
-                        leds: 0,
-                        reserved: 0,
-                    },
-                    KeyboardReport {
-                        modifier: KC_LSHIFT,
                         keycodes: [kc_to_u8!(G), 0, 0, 0, 0, 0],
                         leds: 0,
                         reserved: 0,
                     },
                     KeyboardReport {
-                        modifier: KC_LSHIFT,
+                        modifier: 0,
                         keycodes: [0; 6],
                         leds: 0,
                         reserved: 0,
