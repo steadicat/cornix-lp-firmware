@@ -199,6 +199,52 @@ rusty_fork_test! {
     }
 
     #[test]
+    fn test_dvorak_w_e_roll_preserves_order_during_flow_tap_streak() {
+        key_sequence_test! {
+            keyboard: create_dvorak_w_e_roll_keyboard(true, true),
+            sequence: [
+                [0, 1, true, 200],  // Type E once to establish a flow-tap streak
+                [0, 1, false, 10],
+                [0, 0, true, 10],   // W is buffered as an Enter-combo candidate
+                [0, 1, true, 10],   // Roll to E while W is still held
+                [0, 0, false, 10],
+                [0, 1, false, 10],
+            ],
+            expected_reports: [
+                [0, [kc_to_u8!(D), 0, 0, 0, 0, 0]],
+                [0, [0; 6]],
+                [0, [kc_to_u8!(Comma), 0, 0, 0, 0, 0]],
+                [0, [kc_to_u8!(Comma), kc_to_u8!(D), 0, 0, 0, 0]],
+                [0, [0, kc_to_u8!(D), 0, 0, 0, 0]],
+                [0, [0; 6]],
+            ]
+        };
+    }
+
+    #[test]
+    fn test_dvorak_w_e_roll_without_combo_preserves_order_during_flow_tap_streak() {
+        key_sequence_test! {
+            keyboard: create_dvorak_w_e_roll_keyboard(true, false),
+            sequence: [
+                [0, 1, true, 200],
+                [0, 1, false, 10],
+                [0, 0, true, 10],
+                [0, 1, true, 10],
+                [0, 0, false, 10],
+                [0, 1, false, 10],
+            ],
+            expected_reports: [
+                [0, [kc_to_u8!(D), 0, 0, 0, 0, 0]],
+                [0, [0; 6]],
+                [0, [kc_to_u8!(Comma), 0, 0, 0, 0, 0]],
+                [0, [kc_to_u8!(Comma), kc_to_u8!(D), 0, 0, 0, 0]],
+                [0, [0, kc_to_u8!(D), 0, 0, 0, 0]],
+                [0, [0; 6]],
+            ]
+        };
+    }
+
+    #[test]
     fn test_dvorak_w_e_roll_without_combo_emits_plain_w_then_e() {
         key_sequence_test! {
             keyboard: create_dvorak_w_e_roll_keyboard(false, false),

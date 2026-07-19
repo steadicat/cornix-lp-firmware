@@ -1264,6 +1264,14 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                 });
 
             if pending_combo && !tap_hold_is_combo_component {
+                let flow_tap_will_emit = self.keymap.borrow().behavior.morse.enable_flow_tap
+                    && self.last_press_time.elapsed() < self.keymap.borrow().behavior.morse.prior_idle_time;
+
+                if flow_tap_will_emit {
+                    // A flow-tapped key is emitted immediately, so dispatch any
+                    // older combo candidate first to preserve physical key order.
+                    self.dispatch_combos(key_action, event).await;
+                }
                 return (Some(*key_action), false);
             }
         }
