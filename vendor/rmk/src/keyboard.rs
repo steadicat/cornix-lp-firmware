@@ -526,10 +526,13 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                                 debug!("Pattern after unilateral tap or flow tap: {:?}", pattern);
                                 let action =
                                     Self::action_from_pattern(self.keymap.borrow().behavior, &held_key.action, pattern);
-                                self.process_key_action_normal(action, held_key.event).await;
-                                held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action);
-                                // Push back after triggered tap
-                                self.held_buffer.push_without_sort(held_key);
+                                if let Action::OneShotModifier(modifiers) = action {
+                                    self.arm_oneshot_modifier(modifiers, held_key.event);
+                                } else {
+                                    self.process_key_action_normal(action, held_key.event).await;
+                                    held_key.state = KeyState::ProcessedButReleaseNotReportedYet(action);
+                                    self.held_buffer.push_without_sort(held_key);
+                                }
                             }
                             KeyState::Released(pattern) => {
                                 // In this state pattern is not surely finished,
@@ -547,10 +550,12 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                     }
                 }
                 HeldKeyDecision::PermissiveHold | HeldKeyDecision::HoldOnOtherKeyPress => {
+                    let mut resolved_morse = false;
                     if let Some(mut held_key) = self.held_buffer.remove_if(|k| k.event.pos == pos) {
                         let action = self.keymap.borrow_mut().get_action_with_layer_cache(held_key.event);
 
                         if action.is_morse() {
+                            resolved_morse = true;
                             // Permissive hold of held key is triggered
                             debug!("Cleaning buffered morse key due to permissive hold or hold on other key press");
                             match held_key.state {
@@ -588,16 +593,36 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                             }
                         }
                     }
+
+                    if resolved_morse
+                        && !self.held_buffer.keys.iter().any(|key| {
+                            key.action.is_morse()
+                                && matches!(
+                                    key.state,
+                                    KeyState::Pressed(_) | KeyState::Holding(_) | KeyState::Released(_)
+                                )
+                        })
+                    {
+                        self.fire_held_non_morse_keys().await;
+                    }
                 }
                 HeldKeyDecision::Release => {
                     let deferred_until = self
                         .held_buffer
-                        .find_pos(pos)
+                        .keys
+                        .iter()
+                        .find(|key| {
+                            key.event.pos == pos
+                                && matches!(key.state, KeyState::Pressed(_) | KeyState::Holding(_))
+                        })
                         .copied()
                         .and_then(|key| self.unresolved_morse_timeout_before(&key));
 
                     if let Some(timeout_time) = deferred_until {
-                        if let Some(key) = self.held_buffer.find_pos_mut(pos) {
+                        if let Some(key) = self.held_buffer.keys.iter_mut().find(|key| {
+                            key.event.pos == pos
+                                && matches!(key.state, KeyState::Pressed(_) | KeyState::Holding(_))
+                        }) {
                             let pattern = match key.state {
                                 KeyState::Pressed(pattern) => pattern.followed_by_tap(),
                                 KeyState::Holding(pattern) | KeyState::Released(pattern) => pattern,
@@ -613,7 +638,10 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
 
                     // Releasing the current key, will always be tapping, because timeout isn't here
                     let mut resolved = false;
-                    if let Some(mut held_key) = self.held_buffer.remove_if(|k| k.event.pos == pos) {
+                    if let Some(mut held_key) = self.held_buffer.remove_if(|key| {
+                        key.event.pos == pos
+                            && matches!(key.state, KeyState::Pressed(_) | KeyState::Holding(_))
+                    }) {
                         let key_action = if keyboard_state_updated && !held_key.is_combo_output {
                             self.keymap.borrow_mut().get_action_with_layer_cache(held_key.event)
                         } else {
@@ -850,7 +878,10 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                 .filter(|k| matches!(k.state, KeyState::Pressed(_) | KeyState::Released(_)))
             {
                 // Releasing a key is already buffered
-                if !event.pressed && held_key.action == *key_action {
+                if !event.pressed
+                    && held_key.event.pos == event.pos
+                    && matches!(held_key.state, KeyState::Pressed(_))
+                {
                     debug!("Releasing a held key: {:?}", event);
                     let _ = decisions.push((held_key.event.pos, HeldKeyDecision::Release));
                     decision_for_current_key = KeyBehaviorDecision::Release;
@@ -1501,6 +1532,17 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                 _ => (),
             };
         }
+    }
+
+    fn arm_oneshot_modifier(&mut self, modifiers: ModifierCombination, event: KeyboardEvent) {
+        self.osm_state = match self.osm_state {
+            OneShotState::None => OneShotState::Single(modifiers),
+            OneShotState::Initial(existing) | OneShotState::Single(existing) => {
+                OneShotState::Single(existing | modifiers)
+            }
+            OneShotState::Held(existing) => OneShotState::Held(existing | modifiers),
+        };
+        self.update_osl(event);
     }
 
     async fn process_action_osl(&mut self, layer_num: u8, event: KeyboardEvent) {
