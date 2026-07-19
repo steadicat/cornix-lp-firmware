@@ -612,6 +612,94 @@ rusty_fork_test! {
     }
 
     #[test]
+    fn test_tap_dance_shift_i_roll_emits_complete_dvorak_i_before_term() {
+        embassy_futures::block_on(async {
+            use embassy_futures::select::{Either, select};
+            use embassy_time::{Duration, Timer};
+            use rmk::channel::{KEY_EVENT_CHANNEL, KEYBOARD_REPORT_CHANNEL};
+            use rmk::descriptor::KeyboardReport;
+            use rmk::event::KeyboardEvent;
+            use rmk::hid::Report;
+            use rmk::input_device::Runnable;
+
+            KEY_EVENT_CHANNEL.clear();
+            KEYBOARD_REPORT_CHANNEL.clear();
+
+            let mut keyboard = create_tap_dance_shift_dvorak_roll_keyboard(
+                Hand::Unknown,
+                MorseMode::PermissiveHold,
+                true,
+                true,
+                240,
+            );
+
+            let test = async {
+                Timer::after(Duration::from_millis(250)).await;
+                for event in [
+                    KeyboardEvent::key(0, 0, true),
+                    KeyboardEvent::key(0, 1, true),
+                    KeyboardEvent::key(0, 0, false),
+                    KeyboardEvent::key(0, 1, false),
+                ] {
+                    KEY_EVENT_CHANNEL.send(event).await;
+                    Timer::after(Duration::from_millis(10)).await;
+                }
+
+                // Exact roll: tap-dance Shift down, I down, Shift up, I up.
+                // Shift's tap-dance term is 240 ms, but the completed I tap
+                // must emit immediately instead of remaining buffered for it.
+                let reports = match select(Timer::after(Duration::from_millis(120)), async {
+                    [
+                        KEYBOARD_REPORT_CHANNEL.receive().await,
+                        KEYBOARD_REPORT_CHANNEL.receive().await,
+                    ]
+                })
+                .await
+                {
+                    Either::First(_) => panic!("Dvorak I remained buffered until the tap-dance term"),
+                    Either::Second(reports) => reports,
+                };
+
+                let expected = [
+                    KeyboardReport {
+                        modifier: KC_LSHIFT,
+                        keycodes: [kc_to_u8!(G), 0, 0, 0, 0, 0],
+                        leds: 0,
+                        reserved: 0,
+                    },
+                    KeyboardReport {
+                        modifier: 0,
+                        keycodes: [0; 6],
+                        leds: 0,
+                        reserved: 0,
+                    },
+                ];
+
+                for (index, (actual, expected)) in reports.into_iter().zip(expected).enumerate() {
+                    match actual {
+                        Report::KeyboardReport(actual) => assert_eq!(
+                            expected, actual,
+                            "unexpected Shift-I roll report #{index}"
+                        ),
+                        other => panic!("unexpected report #{index}: {other:?}"),
+                    }
+                }
+            };
+
+            match select(
+                Timer::after(Duration::from_secs(2)),
+                select(keyboard.run(), test),
+            )
+            .await
+            {
+                Either::First(_) => panic!("timed out waiting for the Shift-I roll test"),
+                Either::Second(Either::First(_)) => panic!("keyboard task stopped unexpectedly"),
+                Either::Second(Either::Second(())) => {}
+            }
+        });
+    }
+
+    #[test]
     fn test_fast_space_i_quote_roll_preserves_first_dvorak_i() {
         embassy_futures::block_on(async {
             use embassy_futures::select::{Either, select};

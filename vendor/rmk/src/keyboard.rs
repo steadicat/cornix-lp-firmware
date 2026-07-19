@@ -867,8 +867,9 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                 .is_some_and(|k| matches!(k.state, KeyState::Pressed(_) | KeyState::Released(_)));
 
         if check_held_buffer {
-            // First, sort by press time
-            self.held_buffer.keys.sort_unstable_by_key(|k| k.press_time);
+            // Preserve physical sequence order even after a morse release updates
+            // `press_time` to begin its tap-dance gap timeout.
+            self.held_buffer.keys.sort_unstable_by_key(|k| k.sequence_start_time);
 
             // Check all unresolved held keys, calculate their decision one-by-one
             for held_key in self
