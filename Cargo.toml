@@ -63,6 +63,7 @@ xz2 = "0.1"
 
 [patch.crates-io]
 rmk = { path = "vendor/rmk" }
+rmk-macro = { path = "vendor/rmk-macro" }
 
 [[bin]]
 name = "central"

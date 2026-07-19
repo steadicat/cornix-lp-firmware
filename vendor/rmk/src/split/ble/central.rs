@@ -311,7 +311,7 @@ async fn run_central_manager_task<
 ) -> Result<(), BleHostError<C::Error>> {
     let client = GattClient::<C, P, 10>::new(stack, conn).await?;
 
-    // Use the longer-range 1M PHY for the split link.
+    // Use the longest-range coded S=8 PHY for the split link.
     update_split_ble_phy(stack, conn).await;
 
     info!("Updating connection parameters for peripheral");
@@ -355,7 +355,7 @@ async fn update_split_ble_phy<P: PacketPool>(
     conn: &Connection<'_, P>,
 ) {
     loop {
-        match conn.set_phy(stack, PhyKind::Le1M).await {
+        match conn.set_phy(stack, PhyKind::LeCoded).await {
             Err(BleHostError::BleHost(Error::Hci(error))) => {
                 if 0x2A == error.to_status().into_inner() {
                     info!("[update_split_ble_phy] HCI busy: {:?}", error);
@@ -370,7 +370,7 @@ async fn update_split_ble_phy<P: PacketPool>(
                 error!("[update_split_ble_phy] error: {:?}", e);
             }
             Ok(_) => {
-                info!("[update_split_ble_phy] PHY updated to 1M");
+                info!("[update_split_ble_phy] PHY updated to coded S=8");
             }
         }
         break;

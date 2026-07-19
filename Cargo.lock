@@ -1865,8 +1865,6 @@ dependencies = [
 [[package]]
 name = "rmk-macro"
 version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17f1aa766e731010e185ec92f1e1db6b9a0a1b3c42ae712bdadb7c7976fa9539"
 dependencies = [
  "cargo_toml",
  "darling",
