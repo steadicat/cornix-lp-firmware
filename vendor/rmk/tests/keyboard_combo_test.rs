@@ -59,6 +59,48 @@ fn create_vial_rgui_tab_combo_keyboard(config: BehaviorConfig) -> Keyboard<'stat
     Keyboard::new(wrap_keymap(keymap, per_key_config, behavior_config))
 }
 
+fn create_dvorak_w_e_roll_keyboard(
+    enable_flow_tap: bool,
+    enable_enter_combo: bool,
+) -> Keyboard<'static, 1, 3, 1> {
+    // With host-side Dvorak translation, KC_COMMA produces W and KC_D produces E.
+    // The Vial layout also makes KC_COMMA part of the M+Comma Enter combo and
+    // gives the E position a left-GUI hold action.
+    let keymap = [[[k!(Comma), mt!(D, ModifierCombination::LGUI), k!(M)]]];
+    let hand = [[Hand::Right, Hand::Left, Hand::Right]];
+    let combo = if enable_enter_combo {
+        combos_config(
+            Duration::from_millis(40),
+            &[Combo::new(ComboConfig::new(
+                [k!(M), k!(Comma)],
+                k!(Enter),
+                Some(0),
+            ))],
+        )
+    } else {
+        combos_config(Duration::from_millis(40), &[])
+    };
+    let behavior_config = BehaviorConfig {
+        morse: MorsesConfig {
+            enable_flow_tap,
+            prior_idle_time: Duration::from_millis(170),
+            default_profile: MorseProfile::new(
+                Some(true),
+                Some(MorseMode::HoldOnOtherPress),
+                Some(240u16),
+                Some(240u16),
+            ),
+            ..Default::default()
+        },
+        combo,
+        ..Default::default()
+    };
+
+    let behavior_config = Box::leak(Box::new(behavior_config));
+    let per_key_config = Box::leak(Box::new(PositionalConfig::new(hand)));
+    Keyboard::new(wrap_keymap(keymap, per_key_config, behavior_config))
+}
+
 // Get tested combo config
 pub fn get_combos_config() -> CombosConfig {
     // Define the function to return the appropriate combo configuration
@@ -118,6 +160,63 @@ pub fn get_combos_config() -> CombosConfig {
 }
 
 rusty_fork_test! {
+    #[test]
+    fn test_dvorak_w_e_roll_does_not_emit_command_w() {
+        key_sequence_test! {
+            keyboard: create_dvorak_w_e_roll_keyboard(false, true),
+            sequence: [
+                [0, 0, true, 200],  // Press host-Dvorak W (firmware KC_COMMA) after idle
+                [0, 1, true, 10],   // Roll to host-Dvorak E (LGUI_T(KC_D))
+                [0, 0, false, 10],  // Release W inside both the combo and tapping terms
+                [0, 1, false, 10],  // Release E as a tap
+            ],
+            expected_reports: [
+                [0, [kc_to_u8!(Comma), 0, 0, 0, 0, 0]],
+                [0, [0; 6]],
+                [0, [kc_to_u8!(D), 0, 0, 0, 0, 0]],
+                [0, [0; 6]],
+            ]
+        };
+    }
+
+    #[test]
+    fn test_dvorak_w_e_roll_does_not_emit_command_w_with_flow_tap_enabled() {
+        key_sequence_test! {
+            keyboard: create_dvorak_w_e_roll_keyboard(true, true),
+            sequence: [
+                [0, 0, true, 200],  // W is buffered as a combo candidate after idle
+                [0, 1, true, 10],   // E cannot see that physical W press for flow tap
+                [0, 0, false, 10],
+                [0, 1, false, 10],
+            ],
+            expected_reports: [
+                [0, [kc_to_u8!(Comma), 0, 0, 0, 0, 0]],
+                [0, [0; 6]],
+                [0, [kc_to_u8!(D), 0, 0, 0, 0, 0]],
+                [0, [0; 6]],
+            ]
+        };
+    }
+
+    #[test]
+    fn test_dvorak_w_e_roll_without_combo_emits_plain_w_then_e() {
+        key_sequence_test! {
+            keyboard: create_dvorak_w_e_roll_keyboard(false, false),
+            sequence: [
+                [0, 0, true, 200],
+                [0, 1, true, 10],
+                [0, 0, false, 10],
+                [0, 1, false, 10],
+            ],
+            expected_reports: [
+                [0, [kc_to_u8!(Comma), 0, 0, 0, 0, 0]],
+                [0, [0; 6]],
+                [0, [kc_to_u8!(D), 0, 0, 0, 0, 0]],
+                [0, [0; 6]],
+            ]
+        };
+    }
+
     #[test]
     fn test_single_key_in_combo() {
         key_sequence_test! {

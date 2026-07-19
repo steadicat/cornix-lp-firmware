@@ -902,6 +902,18 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
                     if event.pressed {
                         // The current key is being pressed
 
+                        // Combo candidates are replayed later using their original press
+                        // timestamp. An earlier replay must not interrupt a morse key that
+                        // was physically pressed after it; doing so reverses the real event
+                        // order and can turn a fast roll into an unintended modifier chord.
+                        if self
+                            .get_timer_value(event)
+                            .is_some_and(|press_time| press_time < held_key.press_time)
+                        {
+                            debug!("Earlier buffered key cannot interrupt a later morse key");
+                            continue;
+                        }
+
                         if decision_for_current_key == KeyBehaviorDecision::FlowTap
                             && matches!(held_key.state, KeyState::Pressed(_))
                         {
